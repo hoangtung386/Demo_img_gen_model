@@ -40,7 +40,9 @@ def test_default_settings():
     assert settings.precision is None
     assert settings.offload == "auto"
     assert settings.server_port == 7860
-    assert settings.share is False
+    # Mặc định BẬT: bản clone mới không có .env, mà Colab / máy thuê thì
+    # không có link share là không dùng được demo.
+    assert settings.share is True
     assert settings.base_model_id == settings.base_model
 
 
@@ -48,12 +50,30 @@ def test_env_overrides(monkeypatch):
     monkeypatch.setenv("QIE_NUM_STEPS", "8")
     monkeypatch.setenv("QIE_RANK", "128")
     monkeypatch.setenv("QIE_PRECISION", "fp4")
-    monkeypatch.setenv("QIE_SHARE", "true")
+    monkeypatch.setenv("QIE_SHARE", "false")
     settings = load_settings()
     assert settings.num_steps == 8
     assert settings.rank == 128
     assert settings.precision == "fp4"
-    assert settings.share is True
+    # Chỉ đúng chuỗi "false" (không phân biệt hoa thường, cho phép khoảng
+    # trắng thừa) mới tắt được — mọi giá trị khác giữ nguyên mặc định bật.
+    assert settings.share is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("false", False),
+        ("FALSE", False),
+        ("  false  ", False),
+        ("true", True),
+        ("", True),
+        ("0", True),
+    ],
+)
+def test_share_opt_out(monkeypatch, value, expected):
+    monkeypatch.setenv("QIE_SHARE", value)
+    assert load_settings().share is expected
 
 
 def test_base_model_local_priority(monkeypatch):

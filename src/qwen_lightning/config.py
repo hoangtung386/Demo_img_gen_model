@@ -77,7 +77,13 @@ def load_settings() -> Settings:
         offload=os.getenv("QIE_OFFLOAD", "auto").lower(),
         server_name=os.getenv("QIE_SERVER_NAME", "0.0.0.0"),
         server_port=_as_int(os.getenv("QIE_PORT"), 7860),
-        share=_as_bool(os.getenv("QIE_SHARE")),
+        # Mặc định BẬT. Đường chạy phổ biến nhất của repo này là Colab /
+        # máy thuê, nơi cổng 7860 không tiếp cận được từ ngoài nên không
+        # có link share thì demo coi như không dùng được — mà bản clone
+        # mới lại không có .env (bị gitignore) để bật lên. Deployment nào
+        # tự lo được networking thì đặt QIE_SHARE=false; docker-compose.yml
+        # đã làm đúng vậy.
+        share=os.getenv("QIE_SHARE", "true").strip().lower() != "false",
         # Chế độ demo: ví dụ mẫu trả ảnh dựng sẵn thay vì chạy model. Đặt
         # QIE_DEMO_CACHE=false khi cần đo hiệu năng thật.
         demo_cache=os.getenv("QIE_DEMO_CACHE", "true").strip().lower()

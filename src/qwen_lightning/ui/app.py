@@ -13,6 +13,7 @@ Số thứ tự trên nhãn UI khớp với "image 1"/"image 2" trong prompt.
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
 
 import gradio as gr
@@ -699,6 +700,14 @@ def build_ui(
 
 
 def main() -> None:
+    # Gradio in link share bằng print(). Khi stdout là pipe — Colab chạy
+    # `!uv run run-app`, hoặc `docker logs` — Python block-buffer 8KB nên
+    # link kẹt trong buffer, có khi tới lúc tắt app mới hiện ra. Dockerfile
+    # đặt PYTHONUNBUFFERED=1 cho container; dòng này phủ nốt mọi đường chạy
+    # khác. reconfigure() vắng mặt nếu stdout đã bị thay bằng stream khác.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     settings = load_settings()
     apply_gpu_tuning()
 
@@ -728,6 +737,18 @@ def main() -> None:
     logger.info("Ready.")
 
     demo = build_ui(pipeline, settings.num_steps, settings.demo_cache)
+    if settings.share:
+        logger.info(
+            "share=True — Gradio sẽ in link *.gradio.live ngay bên dưới "
+            "(link sống 1 tuần). Tắt bằng QIE_SHARE=false."
+        )
+    else:
+        logger.info(
+            "share=False — chỉ nghe ở %s:%d, không có link công khai. "
+            "Bật bằng QIE_SHARE=true.",
+            settings.server_name,
+            settings.server_port,
+        )
     demo.launch(
         server_name=settings.server_name,
         server_port=settings.server_port,

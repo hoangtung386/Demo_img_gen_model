@@ -63,7 +63,7 @@ Các biến quan trọng trong `.env` (đọc bởi cả `download` và `serve`)
 | `QIE_WARMUP` | `true` | Chạy một lượt sinh ảnh giả lúc khởi động để người dùng đầu tiên không phải chờ |
 | `QIE_PORT` | `7860` | Cổng Gradio |
 | `QIE_SERVER_NAME` | `0.0.0.0` | Bind address (để chạy trên server) |
-| `QIE_SHARE` | `false` | Tạo link Gradio share công khai |
+| `QIE_SHARE` | `true` | Tạo link Gradio share công khai `*.gradio.live`. Mặc định bật vì Colab / máy thuê không mở được cổng 7860 ra ngoài; `docker-compose.yml` tắt tường minh |
 | `QIE_DEMO_CACHE` | `true` | Ví dụ mẫu trả ảnh dựng sẵn thay vì chạy model (xem bên dưới) |
 | `QIE_DOWNLOAD_BASE_TRANSFORMER` | `false` | Tải cả 5 shard transformer BF16 (~39GB) mà pipeline không dùng tới |
 
@@ -269,8 +269,9 @@ uv run run-app   # phục vụ tại 0.0.0.0:7860
 
 ### Lấy link public để chia sẻ
 
-Nếu server không có IP public, set `QIE_SHARE=true` trong `.env`. Khi khởi động,
-Gradio dựng tunnel và in ra hai dòng:
+Mặc định đã bật, nên không cần làm gì nếu server không có IP public — chỉ khi
+chạy qua `docker compose` mới phải đổi `QIE_SHARE` thành `true` trong
+`docker-compose.yml`. Khi khởi động, Gradio dựng tunnel và in ra hai dòng:
 
 ```
 * Running on local URL:  http://0.0.0.0:7860
@@ -575,7 +576,7 @@ Nếu `ss` cho thấy `127.0.0.1:7860` thay vì `0.0.0.0:7860` thì `QIE_SERVER_
 
 ### Chỉ test nội bộ thì nên tắt link public
 
-`.env` đang đặt `QIE_SHARE=true`, tức mỗi lần khởi động lại tạo một link
+`QIE_SHARE` mặc định là `true`, tức mỗi lần khởi động lại tạo một link
 `*.gradio.live` mở ra Internet. Test trong mạng công ty thì không cần:
 
 ```bash

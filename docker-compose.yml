@@ -24,6 +24,13 @@ services:
       QIE_SERVER_NAME: "0.0.0.0"
       QIE_PORT: "7860"
 
+      # Mặc định trong code là true (Colab / máy thuê cần link mới dùng
+      # được). Ở đây tắt tường minh: container đã publish 0.0.0.0:7860 và
+      # README hướng dẫn vào thẳng qua LAN hoặc SSH port-forward, nên
+      # tunnel gradio.live chỉ thêm một đường công khai không xác thực và
+      # một chặng relay làm chậm ảnh. Cần link tạm thì đổi thành "true".
+      QIE_SHARE: "false"
+
       # .model_paths.env ghi đường dẫn tuyệt đối trên host nên vô nghĩa ở đây
       # (đã loại khỏi image qua .dockerignore). Trỏ thẳng vào chỗ mount.
       # Đổi QIE_RANK / QIE_NUM_STEPS / QIE_PRECISION thì sửa tên file này theo.
