@@ -107,6 +107,7 @@ def generate(
     num_steps: int,
     negative_prompt: str | None = None,
     output_area: int = DEFAULT_OUTPUT_AREA,
+    match_input_size: bool = False,
 ) -> tuple[Image.Image | None, str]:
     """Run the editing pipeline and return ``(image, status_message)``.
 
@@ -116,6 +117,12 @@ def generate(
 
     ``negative_prompt`` chỉ thực sự được dùng khi ``true_cfg_scale > 1.0``;
     ở mức 1.0 (mặc định của Lightning) CFG bị tắt.
+
+    ``match_input_size=True`` thu/phóng ảnh ra về ĐÚNG kích thước pixel của
+    ảnh nền. Cần cho những task chỉ sửa một vùng nhỏ (face swap) mà người
+    dùng muốn ảnh ra thay thế được ảnh vào. Lưu ý đây là phép resize sau khi
+    sinh, KHÔNG phải sinh ở độ phân giải gốc: model vẫn chạy ở
+    ``output_area``, nên ảnh 12MP không vì thế mà có thêm chi tiết thật.
     """
     images = [img for img in (images or []) if img is not None]
     if not images:
@@ -184,6 +191,13 @@ def generate(
     elapsed = end - start
     result = output.images[0]
 
+    # calculate_dimensions làm tròn hai cạnh về bội của 32, nên tỉ lệ khung
+    # sinh ra lệch khỏi tỉ lệ ảnh gốc tối đa ~1%. Resize thẳng về kích thước
+    # gốc kéo lại đúng 1% đó — mắt không thấy, và đổi lại ảnh ra khớp pixel
+    # với ảnh vào. Cắt cho khỏi méo thì mất nội dung ở rìa, tệ hơn.
+    if match_input_size and result.size != (base_w, base_h):
+        result = result.resize((base_w, base_h), Image.LANCZOS)
+
     if len(step_marks) >= 2:
         per_step = (step_marks[-1] - step_marks[0]) / (len(step_marks) - 1)
         denoise_s = per_step * len(step_marks)
@@ -202,11 +216,19 @@ def generate(
     # hàng đợi Gradio, mã hoá PNG trả về, và độ trễ tunnel *.gradio.live (do
     # HuggingFace host, thường là phần lớn nhất của độ trễ cảm nhận được).
     # Nhãn "GPU" ở đầu dòng là để không ai nhầm con số này với round-trip.
+    # Báo kích thước THẬT của ảnh trả về; nếu nó khác kích thước sinh thì nói
+    # rõ cả hai, để không ai tưởng model chạy ở độ phân giải ảnh gốc.
+    if result.size == (width, height):
+        size_label = f"{width}×{height}"
+    else:
+        size_label = (
+            f"{result.width}×{result.height} (sinh ở {width}×{height})"
+        )
     info = (
         f"⚡ GPU {elapsed:.1f}s  =  denoise {denoise_s:.1f}s "
         f"({per_step:.2f}s/bước) + text {text_label} + "
         f"prep {prep_s:.1f}s + decode {decode_s:.1f}s\n"
-        f"{width}×{height} · {num_steps} bước · cfg {true_cfg_scale} · "
+        f"{size_label} · {num_steps} bước · cfg {true_cfg_scale} · "
         f"seed {seed}"
     )
     logger.info(info.replace("\n", " | "))

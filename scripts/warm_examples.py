@@ -83,6 +83,18 @@ def main() -> None:
             note="", seed=4000 + i, api_name="/on_hug", **common,
         )
 
+    print(">>> Tab 5 — Face Swap")
+    # Giống tab 3: dropdown phạm vi chỉ dựng lại prompt trong UI chứ không
+    # phải tham số endpoint, nên truyền thẳng prompt của phạm vi đó.
+    for i, (face, photo, scope) in enumerate(spec.FACESWAP_CASES):
+        total += _run(
+            client, "faceswap", i,
+            face=handle_file(str(spec.image_path(face))),
+            photo=handle_file(str(spec.image_path(photo))),
+            prompt_text=prompts.build_faceswap_prompt(scope),
+            note="", seed=5000 + i, api_name="/on_faceswap", **common,
+        )
+
     print(f">>> Xong. Tổng {total:.1f}s, ảnh nằm ở {spec.OUTPUTS_DIR}")
 
 

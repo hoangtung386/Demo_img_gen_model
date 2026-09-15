@@ -1,11 +1,13 @@
 """Gradio user interface for the demo.
 
-Ba tab tương ứng ba bài toán đang thử nghiệm trên cùng một pipeline
-Qwen-Image-Edit-2509 Lightning: thử đồ ảo, thiết kế lại nội thất và chuyển
-ảnh chụp thành hoạt hình. Điểm khác nhau giữa các tab nằm ở prompt (xem
-``prompts.py``) và ở thứ tự ảnh đưa vào pipeline.
+Mỗi tab là một bài toán đang thử nghiệm trên cùng một pipeline
+Qwen-Image-Edit-2509 Lightning: thử đồ ảo, thiết kế lại nội thất, chuyển ảnh
+chụp thành hoạt hình, ghép hai người và hoán đổi khuôn mặt. Điểm khác nhau
+giữa các tab nằm ở prompt (xem ``prompts.py``) và ở thứ tự ảnh đưa vào
+pipeline.
 
-THỨ TỰ ẢNH: ảnh nền (người mẫu / phòng của bạn) phải là ảnh CUỐI. Pipeline
+THỨ TỰ ẢNH: ảnh nền (người mẫu / phòng của bạn / ảnh đầy đủ) phải là ảnh
+CUỐI. Pipeline
 lấy tỉ lệ khung từ ``image[-1]`` và mô hình coi ảnh cuối là ảnh chính cần
 chỉnh sửa; đặt ảnh tham chiếu ở cuối khiến kết quả bê nguyên ảnh tham chiếu.
 Số thứ tự trên nhãn UI khớp với "image 1"/"image 2" trong prompt.
@@ -89,6 +91,9 @@ def _build_demo_cache() -> dict[str, str]:
         [spec.image_path(c[0])], prompts.build_cartoon_prompt(c[1])))
     add("hug", spec.HUG_CASES, lambda c: _demo_key(
         [spec.image_path(c[0]), spec.image_path(c[1])]))
+    add("faceswap", spec.FACESWAP_CASES, lambda c: _demo_key(
+        [spec.image_path(c[0]), spec.image_path(c[1])],
+        prompts.build_faceswap_prompt(c[2])))
     return index
 
 
@@ -224,7 +229,10 @@ def build_ui(
         len(cache),
     )
 
-    def _run(images, prompt_text, note, negative, cfg, seed, steps, res):
+    def _run(
+        images, prompt_text, note, negative, cfg, seed, steps, res,
+        match_input_size=False,
+    ):
         """Nối ghi chú người dùng vào prompt task rồi chạy pipeline.
 
         ``images`` phải có ảnh nền ở CUỐI — xem docstring của module.
@@ -238,15 +246,17 @@ def build_ui(
             int(steps),
             negative,
             OUTPUT_PRESETS.get(res, DEFAULT_OUTPUT_AREA),
+            match_input_size,
         )
 
-    title = "Qwen-Image-Edit-2509 Lightning — Demo 3 task"
+    title = "Qwen-Image-Edit-2509 Lightning — Demo 5 task"
     with gr.Blocks(title=title) as demo:
         gr.Markdown(
             "# Qwen-Image-Edit-2509 Lightning (4-bit, 4-step)\n"
-            "Bốn tab thử nghiệm: **Virtual Try-On**, **Home Design**, "
-            "**Image to Cartoon** và **Ghép 2 người ôm nhau**. Mỗi tab có "
-            "prompt chuyên biệt viết sẵn và ảnh mẫu bấm-là-chạy."
+            "Năm tab thử nghiệm: **Virtual Try-On**, **Home Design**, "
+            "**Image to Cartoon**, **Ghép 2 người ôm nhau** và "
+            "**Face Swap**. Mỗi tab có prompt chuyên biệt viết sẵn và ảnh "
+            "mẫu bấm-là-chạy."
         )
 
         # ------------------------------------------------------------------
@@ -696,6 +706,132 @@ def build_ui(
                     hug_res,
                 ],
                 outputs=[hug_out, hug_status],
+            )
+
+        # ------------------------------------------------------------------
+        # Tab 5 — Face Swap
+        # ------------------------------------------------------------------
+        with gr.Tab("5. Face Swap"):
+            gr.Markdown(
+                "Upload **ảnh mặt đã crop** (Ảnh 1) và **ảnh đầy đủ** có "
+                "người cùng phong cảnh (Ảnh 2). Model thay khuôn mặt trong "
+                "Ảnh 2 bằng khuôn mặt của Ảnh 1, **giữ nguyên phong cảnh, "
+                "quần áo, dáng người và khung hình**.\n"
+                "> Ảnh 2 là **ảnh nền** — ảnh kết quả trả về **đúng kích "
+                "thước pixel của Ảnh 2**. Model vẫn sinh ở độ phân giải chọn "
+                "trong *Tuỳ chỉnh nâng cao* rồi scale về kích thước gốc, nên "
+                "ảnh vào rất lớn sẽ không vì thế mà có thêm chi tiết thật.\n"
+                "> Hoạt động tốt nhất khi Ảnh 2 có **một khuôn mặt rõ**, và "
+                "Ảnh 1 crop sát mặt, nhìn thẳng, không bị mờ."
+            )
+            _fs_scope0 = next(iter(prompts.FACE_SWAP_SCOPES))
+            with gr.Row():
+                with gr.Column(scale=1):
+                    with gr.Row():
+                        fs_face = gr.Image(
+                            label="Ảnh 1 — Mặt đã crop",
+                            type="pil",
+                            height=320,
+                        )
+                        fs_photo = gr.Image(
+                            label="Ảnh 2 — Ảnh đầy đủ (ảnh nền)",
+                            type="pil",
+                            height=320,
+                        )
+                    fs_scope = gr.Dropdown(
+                        label="Phạm vi hoán đổi",
+                        choices=list(prompts.FACE_SWAP_SCOPES),
+                        value=_fs_scope0,
+                        info=(
+                            "Mặc định chỉ đổi vùng mặt và giữ tóc của Ảnh 2 "
+                            "— đổi cả tóc dễ lộ đường ghép ở chân tóc."
+                        ),
+                    )
+                    fs_note = gr.Textbox(
+                        label="Ghi chú thêm (tuỳ chọn)",
+                        placeholder="ví dụ: keep the glasses from image 2",
+                        lines=2,
+                    )
+                    fs_run = gr.Button("Hoán đổi khuôn mặt", variant="primary")
+                    (
+                        fs_prompt,
+                        fs_negative,
+                        fs_cfg,
+                        fs_seed,
+                        fs_steps,
+                        fs_res,
+                        fs_reset,
+                    ) = _advanced_block(
+                        prompts.build_faceswap_prompt(_fs_scope0),
+                        prompts.FACESWAP_NEGATIVE,
+                        num_steps,
+                    )
+                with gr.Column(scale=1):
+                    fs_out, fs_status = _output_block()
+
+            fs_scope.change(
+                prompts.build_faceswap_prompt, [fs_scope], [fs_prompt]
+            )
+            fs_reset.click(
+                prompts.build_faceswap_prompt, [fs_scope], [fs_prompt]
+            )
+
+            def on_faceswap(
+                face, photo, note, prompt_text, negative, cfg, seed, steps,
+                res,
+            ):
+                started = time.time()
+                if face is None:
+                    return None, "Vui lòng upload ảnh mặt đã crop (Ảnh 1)."
+                if photo is None:
+                    return None, "Vui lòng upload ảnh đầy đủ (Ảnh 2)."
+                hit = cache.get(_demo_key([face, photo], prompt_text))
+                if hit:
+                    return _serve_cached(hit, started)
+                # match_input_size=True: tab này hứa ảnh ra thay thế được ảnh
+                # vào, nên kích thước phải khớp đúng pixel.
+                return _run(
+                    [face, photo], prompt_text, note, negative, cfg, seed,
+                    steps, res, True,
+                )
+
+            def ex_faceswap(face, photo, scope):
+                """Click ví dụ: đẩy thẳng ảnh dựng sẵn ra khung kết quả."""
+                return on_faceswap(
+                    face, photo, "", prompts.build_faceswap_prompt(scope),
+                    fs_negative.value, 1.0, -1, num_steps,
+                    next(iter(OUTPUT_PRESETS)),
+                )
+
+            _ex_fs = _example_rows(
+                spec.FACESWAP_CASES,
+                lambda case: [_img(case[0]), _img(case[1]), case[2]],
+            )
+            if _ex_fs:
+                gr.Examples(
+                    examples=_ex_fs,
+                    inputs=[fs_face, fs_photo, fs_scope],
+                    outputs=[fs_out, fs_status],
+                    fn=ex_faceswap,
+                    run_on_click=True,
+                    label="Ví dụ mẫu — bấm để xem ngay kết quả",
+                    examples_per_page=6,
+                )
+
+            fs_run.click(
+                fn=on_faceswap,
+                inputs=[
+                    fs_face,
+                    fs_photo,
+                    fs_note,
+                    fs_prompt,
+                    fs_negative,
+                    fs_cfg,
+                    fs_seed,
+                    fs_steps,
+                    fs_res,
+                ],
+                outputs=[fs_out, fs_status],
             )
 
     return demo

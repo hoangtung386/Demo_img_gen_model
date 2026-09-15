@@ -113,7 +113,7 @@ python scripts/serve.py
 # hoặc: uv run run-app
 ```
 
-Mở trình duyệt tại `http://<server-ip>:7860`. Giao diện có **3 tab**, mỗi tab đã
+Mở trình duyệt tại `http://<server-ip>:7860`. Giao diện có **5 tab**, mỗi tab đã
 có prompt chuyên biệt viết sẵn (xem `src/qwen_lightning/ui/prompts.py`):
 
 | Tab | Đầu vào | Kết quả |
@@ -122,6 +122,7 @@ có prompt chuyên biệt viết sẵn (xem `src/qwen_lightning/ui/prompts.py`):
 | **2. Home Design** | **Một** ảnh căn phòng + mô tả thiết kế tự viết | Chính căn phòng đó được dọn sạch đồ cũ và bài trí lại theo mô tả, giữ nguyên tường, cửa sổ, cửa, sàn và góc chụp |
 | **3. Image to Cartoon** | 1 ảnh chụp có người và phong cảnh | Toàn bộ người trong ảnh thành nhân vật hoạt hình giữ tối đa nét mặt, kiểu tóc, vóc dáng, trang phục; phong cảnh vẽ lại cùng phong cách |
 | **4. Ghép 2 người ôm nhau** | Ảnh 1: người thứ nhất — Ảnh 2: người thứ hai *(ảnh nền)* | Một ảnh duy nhất hai người đang ôm nhau, giữ khuôn mặt, kiểu tóc, vóc dáng và trang phục của từng người |
+| **5. Face Swap** | Ảnh 1: mặt đã crop — Ảnh 2: ảnh đầy đủ có người và phong cảnh *(ảnh nền)* | Chính ảnh 2 nhưng khuôn mặt đã đổi sang người ở ảnh 1, giữ nguyên phong cảnh, quần áo, dáng người, khung hình — và trả về **đúng kích thước pixel của ảnh 2** |
 
 Mỗi tab có khối **Ví dụ mẫu** với 3 test case, bảng chỉ hiện các cột đầu vào.
 
@@ -176,10 +177,31 @@ giữ đúng cách đánh số đó.
 > bỏ hẳn ảnh tham chiếu (mô tả phong cách bằng chữ) thì không còn ảnh nào để
 > model copy nhầm. Đó là cách tab 2 hoạt động hiện nay.
 
+### Tab 5 — Face Swap
+
+Ảnh 1 là mặt đã crop, Ảnh 2 là ảnh đầy đủ và cũng là **ảnh nền**.
+
+- **Kích thước ảnh ra bằng đúng ảnh vào.** Tab này bật `match_input_size`, tức
+  ảnh kết quả được scale về đúng kích thước pixel của Ảnh 2. Model vẫn sinh ở
+  độ phân giải chọn trong *Tuỳ chỉnh nâng cao* (mặc định ~1 MP) rồi mới scale,
+  nên ảnh vào 12 MP sẽ **không** vì thế mà có thêm chi tiết thật.
+  `calculate_dimensions` làm tròn hai cạnh về bội của 32 nên tỉ lệ khung lệch
+  tối đa ~0.9% so với ảnh gốc; phép scale kéo lại đúng phần đó.
+- **Dropdown *Phạm vi hoán đổi***: mặc định chỉ đổi vùng mặt và giữ tóc của
+  Ảnh 2. Đổi cả tóc dễ lộ đường ghép ở chân tóc, nhất là khi Ảnh 2 có tóc che
+  trán hoặc đội mũ.
+- Prompt của tab này là prompt dài nhất trong demo (~1840 ký tự). Ba đoạn giữa
+  là phần quyết định: *không dán phẳng ảnh crop*, *relight theo ánh sáng Ảnh
+  2*, và *khớp tông da với cổ/tai/tay*. Nếu phải cắt ngắn cho model 4 bước bớt
+  lạc, hãy giữ ba đoạn đó lại.
+- Hoạt động tốt nhất khi Ảnh 2 có **một khuôn mặt rõ**, và Ảnh 1 crop sát mặt,
+  nhìn thẳng, không mờ.
+
 Lưu ý khác:
 
-- Tab 1, 2, 3 có dropdown thu hẹp bài toán (loại trang phục / loại phòng /
-  phong cách hoạt hình) — đổi dropdown sẽ dựng lại prompt tương ứng.
+- Tab 1, 2, 3, 5 có dropdown thu hẹp bài toán (loại trang phục / loại phòng /
+  phong cách hoạt hình / phạm vi hoán đổi) — đổi dropdown sẽ dựng lại prompt
+  tương ứng.
 - Tab 2: ô **Mô tả thiết kế mong muốn** là bắt buộc, viết bằng tiếng Anh.
 - Ô **Ghi chú thêm** ở các tab khác được nối vào cuối prompt.
 - Mục **Tuỳ chỉnh nâng cao** cho phép sửa trực tiếp prompt, negative prompt,

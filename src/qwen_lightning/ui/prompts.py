@@ -1,4 +1,4 @@
-"""Prompt templates cho ba bài toán demo.
+"""Prompt templates cho các bài toán demo.
 
 Mỗi task có một "system prompt" riêng được viết sẵn bằng tiếng Anh — text
 encoder của Qwen-Image-Edit bám sát chỉ dẫn tiếng Anh tốt hơn tiếng Việt, và
@@ -214,6 +214,90 @@ def build_cartoon_prompt(style_label: str) -> str:
     """Prompt chuyển ảnh chụp thành tranh hoạt hình."""
     style = CARTOON_STYLES.get(style_label, "3D Pixar-style animated movie")
     return CARTOON_PROMPT_TEMPLATE.format(style=style)
+
+
+# --------------------------------------------------------------------------
+# Tab 5 — Face Swap
+# --------------------------------------------------------------------------
+
+# Phạm vi hoán đổi. Mặc định CHỈ khuôn mặt: tóc thuộc về ảnh nền, đổi cả tóc
+# là cách nhanh nhất để lộ đường ghép ở chân tóc khi ảnh nền có tóc che trán,
+# mũ hoặc tóc bay.
+FACE_SWAP_SCOPES: dict[str, str] = {
+    "Chỉ khuôn mặt (giữ tóc của ảnh gốc)": (
+        "Swap the facial region only - forehead, eyes, eyebrows, nose, "
+        "mouth, cheeks, chin and jawline. Keep the hairstyle, hair colour "
+        "and hairline of image 2 exactly as they are."
+    ),
+    "Khuôn mặt + tóc": (
+        "Swap the face together with the hair: take the hairstyle, hair "
+        "colour and hairline from image 1 as well, and fit them to the head "
+        "shape, head angle and lighting of image 2."
+    ),
+}
+
+# Prompt viết theo khung ba phần của module, nhưng ở task này phần 2 (bảo
+# toàn) nặng hơn hẳn: người dùng muốn MỘT vùng đổi và toàn bộ phần còn lại
+# đứng yên, nên mọi thứ không phải khuôn mặt đều được liệt kê tường minh.
+#
+# Ba câu giữa là phần hay bị bỏ sót và cũng là phần quyết định ảnh có trông
+# như ghép hay không:
+#   - "do not paste image 1 flat": model rất hay dán thẳng ảnh crop vào,
+#     giữ nguyên góc mặt của ảnh crop trong khi đầu ở ảnh nền đang nghiêng.
+#   - relight: ảnh crop thường chụp ở ánh sáng khác hẳn ảnh nền.
+#   - khớp tông da với cổ/tai/tay: chỗ lộ đường ghép rõ nhất.
+FACESWAP_PROMPT_TEMPLATE = (
+    "Image 1 is a close-up crop of a face. Image 2 is a full photograph of "
+    "a person in a scene.\n"
+    "Edit image 2: replace the face of the person in image 2 with the face "
+    "from image 1. Image 2 is the base photo and must stay the output "
+    "frame.\n"
+    "{scope}\n"
+    "Carry over the identity of image 1 faithfully: same face shape and "
+    "bone structure, same eye shape, eye colour and eye spacing, same "
+    "eyebrows, same nose, same mouth and lips, same chin and jawline, same "
+    "skin texture, freckles and moles, same apparent age and gender. The "
+    "result must be recognisable as the person of image 1.\n"
+    "Do not paste image 1 flat - rebuild that face inside image 2: match "
+    "the head orientation, tilt and gaze direction of image 2, match its "
+    "facial expression, match the camera perspective and distance, and "
+    "scale the face to fit the head of image 2 exactly.\n"
+    "Relight the new face with the lighting already in image 2 - same light "
+    "direction, same shadows, same colour temperature, same contrast, same "
+    "grain and depth of field - and match its skin tone to the neck, ears "
+    "and hands of image 2 so there is no visible seam or colour break at "
+    "the jawline, hairline, ears and neck.\n"
+    "Everything else in image 2 stays exactly as it is: the background and "
+    "scenery, every object, the clothing and its colours, the body, "
+    "shoulders, arms, hands and posture, the neck, the framing and crop, "
+    "the camera angle and the overall colour grading. Do not move, resize "
+    "or re-render the person or the scene. Keep the same number of people - "
+    "add nobody, remove nobody.\n"
+    "Photorealistic result that reads as one single untouched photograph: "
+    "natural skin, sharp facial detail, no mask edge, no halo around the "
+    "head, no ghost of the original face."
+)
+
+# Không liệt kê "changed hairstyle" ở đây: phạm vi hoán đổi có tuỳ chọn đổi
+# cả tóc, nên câu đó sẽ chống lại chính prompt khi người dùng chọn nó.
+FACESWAP_NEGATIVE = (
+    "different person, unrecognisable face, original face still visible, "
+    "ghost face, double face, two faces on one head, blended identity, "
+    "distorted face, warped features, asymmetric eyes, deformed mouth, "
+    "mismatched skin tone, visible seam, mask edge, halo around head, "
+    "blurry face, waxy plastic skin, changed clothing, changed background, "
+    "different scene, moved person, changed pose, changed body, different "
+    "camera angle, different crop, extra people, missing people, blurry, "
+    "low quality, watermark, text, cartoon"
+)
+
+
+def build_faceswap_prompt(scope_label: str) -> str:
+    """Prompt hoán đổi khuôn mặt cho phạm vi đã chọn."""
+    scope = FACE_SWAP_SCOPES.get(
+        scope_label, next(iter(FACE_SWAP_SCOPES.values()))
+    )
+    return FACESWAP_PROMPT_TEMPLATE.format(scope=scope)
 
 
 # --------------------------------------------------------------------------

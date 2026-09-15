@@ -58,6 +58,16 @@ CARTOON_CASES: list[tuple[str, str]] = [
     ("cartoon_people_3.jpg", "Disney vẽ tay"),
 ]
 
+# (ảnh mặt đã crop, ảnh đầy đủ, nhãn phạm vi trong FACE_SWAP_SCOPES)
+FACESWAP_CASES: list[tuple[str, str, str]] = [
+    ("faceswap_face.jpg", "faceswap_photo.jpg",
+     "Chỉ khuôn mặt (giữ tóc của ảnh gốc)"),
+    ("faceswap_face_2.jpg", "faceswap_photo_2.jpg",
+     "Chỉ khuôn mặt (giữ tóc của ảnh gốc)"),
+    ("faceswap_face_3.jpg", "faceswap_photo_3.jpg",
+     "Khuôn mặt + tóc"),
+]
+
 # (ảnh người thứ nhất, ảnh người thứ hai)
 HUG_CASES: list[tuple[str, str]] = [
     ("hug_person_a.jpg", "hug_person_b.jpg"),
