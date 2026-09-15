@@ -28,6 +28,12 @@ RUN pip install "${NUNCHAKU_WHEEL}"
 # Phần còn lại lấy từ pyproject. torch==2.9.0 đã thoả bởi bản +cu128 ở trên
 # nên pip không kéo lại bản PyPI. `accelerate` (offload.py cần) đi kèm
 # nunchaku, không phải khai báo thêm.
+#
+# THỨ TỰ BẮT BUỘC: nunchaku phải được cài TRƯỚC dòng này. pyproject khai báo
+# `nunchaku` như dependency thật, nhưng URL wheel nằm trong [tool.uv.sources]
+# mà pip KHÔNG đọc. Wheel cài ở trên đã thoả requirement nên pip bỏ qua;
+# đảo thứ tự lại thì pip sẽ đi tìm trên PyPI và lôi về package thống kê sinh
+# học trùng tên. Dùng `uv sync` thì không có vấn đề này.
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install .

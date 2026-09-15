@@ -3,7 +3,10 @@ name = "qwen-image-edit-2509-lightning"
 version = "0.1.0"
 description = "Gradio demo for Qwen-Image-Edit-2509 Lightning (4-bit, 4-step) via Nunchaku"
 readme = "README.md"
-requires-python = ">=3.10"
+# Chặn trên < 3.14: [tool.uv.sources] bên dưới chỉ khai báo wheel nunchaku
+# cho cp310-cp313. Trên 3.14 sẽ không có source nào khớp và uv im lặng rơi
+# về PyPI — đúng vào cái bẫy package trùng tên mô tả ở dưới.
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "gradio==6.24.0",
     "torch==2.9.0",
@@ -16,6 +19,11 @@ dependencies = [
     "huggingface-hub==1.27.0",
     "python-dotenv==1.2.2",
     "pillow==12.3.0",
+    # Marker linux là rào chắn, không phải trang trí: nunchaku-tech chỉ dựng
+    # wheel cho linux/windows, và nếu dependency này còn hiệu lực trên macOS
+    # thì uv sẽ kéo package PyPI trùng tên (xem ghi chú [tool.uv.sources]).
+    # Thà không cài gì rồi ImportError, còn hơn cài nhầm thư viện khác.
+    "nunchaku; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -39,27 +47,35 @@ packages = ["src/qwen_lightning"]
 [tool.uv]
 prerelease = "allow"
 
-# --- Nunchaku: cài thủ công, KHÔNG khai báo trong [project.dependencies] ---
+# --- Nunchaku -----------------------------------------------------------
 #
 # Package tên "nunchaku" trên PyPI là một thư viện thống kê sinh học khác
 # hoàn toàn (piece-wise linear segmentation, tác giả Yu Huo) — KHÔNG phải
 # thư viện lượng tử hóa của nunchaku-tech. Cài nó vào sẽ gây ImportError:
 #   cannot import name 'NunchakuQwenImageTransformer2DModel'
+# Vì vậy phải ghim URL wheel tường minh ở đây; mọi môi trường không khớp
+# marker nào phải rơi vào "không cài", không được rơi về PyPI.
 #
 # Nunchaku thật chỉ phát hành wheel trên GitHub releases, dựng riêng cho
 # từng tổ hợp python × torch × CUDA. Wheel phải khớp CẢ BA, nếu không sẽ
-# lỗi ABI lúc import.
+# lỗi ABI lúc import. Ở đây ghim torch 2.9 + cu12.8 cho khớp torch==2.9.0
+# bên trên — ĐỔI torch thì phải đổi cả bốn URL.
 #
-# Tổ hợp đang dùng: py3.11 + torch 2.9 (cu128) + driver 12.4
-# Wheel cu12.8 chạy được trên driver 12.4 nhờ CUDA minor version
+# Wheel cu12.8 chạy được trên driver CUDA 12.4 nhờ minor version
 # compatibility — không cần nâng driver.
 #
-#   uv pip install torch==2.9.0 torchvision \
-#       --index-url https://download.pytorch.org/whl/cu128
-#   uv pip install https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp311-cp311-linux_x86_64.whl
+# Khai báo ở đây (thay vì bắt người dùng `uv pip install` thủ công) vì
+# `uv sync` gỡ sạch mọi package không có trong lock: cài tay xong chạy
+# `uv sync` lần nữa là nunchaku biến mất, và lỗi chỉ lộ ra lúc import.
 #
-# Đổi phiên bản torch thì phải đổi wheel nunchaku tương ứng.
 # Danh sách wheel: https://github.com/nunchaku-tech/nunchaku/releases
+[tool.uv.sources]
+nunchaku = [
+  { url = "https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp310-cp310-linux_x86_64.whl", marker = "python_version == '3.10' and sys_platform == 'linux'" },
+  { url = "https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp311-cp311-linux_x86_64.whl", marker = "python_version == '3.11' and sys_platform == 'linux'" },
+  { url = "https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp312-cp312-linux_x86_64.whl", marker = "python_version == '3.12' and sys_platform == 'linux'" },
+  { url = "https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp313-cp313-linux_x86_64.whl", marker = "python_version == '3.13' and sys_platform == 'linux'" },
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
