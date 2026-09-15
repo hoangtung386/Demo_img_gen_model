@@ -115,3 +115,21 @@ Thumbs.db
 # config/example.env template biến môi trường, không chứa bí mật.
 #
 # Muốn loại kết quả dựng sẵn khỏi repo thì thêm: examples/outputs/
+# --- Secret GCS + archive trọng số ---------------------------------------
+#
+# "ai-asset.json" KHÔNG khớp file thật "ai-asset-amb.json" — pattern cũ để
+# lọt key service account vào git. Dùng wildcard để mọi biến thể tên đều
+# dính, và chặn luôn cả thư mục secrets/.
+ai-asset*.json
+*-key.json
+*service-account*.json
+# Loại NỘI DUNG chứ không loại thư mục: git không đi vào một thư mục đã
+# bị ignore, nên "/secrets/" + "!/secrets/README.md" sẽ không bao giờ
+# giữ lại được README.
+/secrets/*
+!/secrets/README.md
+
+# Archive trọng số dựng bằng scripts/pack_models.sh (hàng chục GB).
+models.zip
+models.tar
+models.tar.*

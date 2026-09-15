@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+
+# =============================================================================
+# Fetcher — kéo trọng số từ Google Cloud Storage vào ./models trước khi app
+# khởi động. Tách hẳn khỏi image app vì hai lý do:
+#
+#   1. Image app không phải gánh thêm gcloud CLI (~300MB) chỉ để chạy một lần
+#      lúc khởi động.
+#   2. Key service account chỉ được mount vào ĐÂY, không bao giờ đi vào image
+#      hay môi trường của tiến trình phục vụ.
+# =============================================================================
+FROM google/cloud-sdk:slim
+
+# zstd : giải nén archive dạng .tar.zst theo kiểu stream (xem fetch_models.sh).
+# unzip: chỉ cần khi URI trỏ tới .zip.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        zstd \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/fetch_models.sh /usr/local/bin/fetch-models
+RUN chmod +x /usr/local/bin/fetch-models
+
+ENTRYPOINT ["/usr/local/bin/fetch-models"]

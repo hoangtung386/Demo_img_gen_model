@@ -106,6 +106,75 @@ Kiểm tra cây model bất cứ lúc nào (không cần GPU):
 make preflight
 ```
 
+## Trọng số từ Google Cloud Storage (thay cho HuggingFace)
+
+Trên production, `docker compose` kéo trọng số từ GCS thay vì Hub: không cần
+`HF_TOKEN`, không cần accept license lúc deploy, không phụ thuộc Hub còn sống.
+
+### 1. Đóng gói và đẩy lên (chạy một lần, trên máy đã có `models/`)
+
+```bash
+make pack DEST=gs://<bucket>/qwen/
+```
+
+Script dựng `models.tar.zst` rồi upload. **Đừng dùng `.zip`** — số đo trên
+chính trọng số của repo này, mẫu 500MB lấy từ giữa file transformer INT4:
+
+| | Thời gian | Tiết kiệm |
+| :--- | ---: | ---: |
+| `gzip -6` (tức `zip`) | 42.9s | 32.8% |
+| `zstd -3 -T0` | **0.7s** | **34.9%** |
+| `zstd -10 -T0` | 7.0s | 35.9% |
+
+zstd nhanh hơn 60 lần **và** nén tốt hơn. Nhưng lý do quan trọng hơn là
+**tar stream được, zip thì không**: central directory của zip nằm ở cuối
+file, nên phía nhận buộc phải tải trọn archive xuống đĩa rồi mới giải nén —
+27GB archive + 27GB bản giải nén = **54GB đĩa trống** phải có. Với
+`.tar.zst`, `gcloud storage cat | zstd -d | tar -x` chỉ cần 27GB. Một lần
+tải dở dang cũng không để lại archive cụt.
+
+`scripts/fetch_models.sh` vẫn nhận `.zip`, `.tar.gz`, `.tar`, hoặc một prefix
+thư mục (khi đó dùng `gcloud storage rsync -r`, tải song song và chạy lại là
+tiếp tục chứ không làm lại từ đầu).
+
+### 2. Cấu hình phía server
+
+```bash
+# .env
+QIE_MODELS_URI=gs://<bucket>/qwen/models.tar.zst
+```
+
+Xác thực, theo thứ tự ưu tiên:
+
+1. **VM trên GCE đã gắn service account** — không cần làm gì, script dùng ADC.
+   Đây là cách nên dùng: không có file key nào để rò rỉ, Google lo xoay vòng
+   credential, thu hồi bằng một lệnh IAM.
+2. **Key service account** — đặt file vào `secrets/gcs-key.json` (xem
+   [`secrets/README.md`](secrets/README.md)). Quyền tối thiểu:
+   `roles/storage.objectViewer` trên đúng bucket đó.
+
+Key **chỉ** được mount vào container `model-fetcher`, không đi vào image app
+và không nằm trong build context (`.dockerignore` chặn `secrets/` và
+`ai-asset*.json`).
+
+### 3. Chạy
+
+```bash
+make run
+```
+
+`model-fetcher` chạy trước, kéo và giải nén vào `./models`, tự kiểm tra cây
+thư mục rồi thoát. App chỉ khởi động khi bước đó trả về 0
+(`depends_on: service_completed_successfully`) — archive đóng sai gốc sẽ bị
+chặn ngay thay vì đổ traceback sau 2 phút nạp model.
+
+Lần chạy sau, fetcher thấy `models/.fetched-from` khớp URI và còn đủ file thì
+bỏ qua. Ép tải lại: `QIE_MODELS_FORCE=true`. Xem riêng log tải:
+
+```bash
+make fetch
+```
+
 ## Chạy demo
 
 ```bash

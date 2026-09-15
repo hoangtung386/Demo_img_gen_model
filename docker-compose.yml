@@ -1,4 +1,34 @@
 services:
+  # ---------------------------------------------------------------------
+  # Kéo trọng số từ GCS, chạy một lần rồi thoát. App chờ nó thành công mới
+  # khởi động (depends_on: service_completed_successfully bên dưới).
+  #
+  # Thay hẳn cho đường HuggingFace: không HF_TOKEN, không accept license lúc
+  # deploy, không phụ thuộc hub còn sống hay không. Đặt QIE_MODELS_URI trong
+  # .env; bỏ trống thì compose báo lỗi ngay chứ không chạy với models rỗng.
+  # ---------------------------------------------------------------------
+  model-fetcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.fetch
+    image: qwen-lightning-fetch:0.1.0
+    container_name: qwen-lightning-fetch
+    environment:
+      QIE_MODELS_URI: "${QIE_MODELS_URI:?dat QIE_MODELS_URI=gs://bucket/path/models.tar.zst trong .env}"
+      QIE_MODELS_DIR: /models
+      QIE_GCS_KEY_FILE: "${QIE_GCS_KEY_FILE:-/secrets/gcs-key.json}"
+      QIE_MODELS_FORCE: "${QIE_MODELS_FORCE:-false}"
+    volumes:
+      # rw: đây là service DUY NHẤT được ghi vào models/.
+      - ./models:/models
+      # Mount cả THƯ MỤC chứ không phải file key: thư mục thì Docker tạo được
+      # nếu chưa có, còn trỏ bind mount vào một file không tồn tại thì Docker
+      # lặng lẽ tạo ra một thư mục cùng tên và script đọc key thành lỗi khó
+      # hiểu. Thư mục rỗng => script tự rơi về ADC, đúng cách khi VM trên GCE
+      # đã gắn service account (không có file key nào để rò rỉ).
+      - ./secrets:/secrets:ro
+    restart: "no"
+
   qwen-lightning:
     build:
       context: .
@@ -14,6 +44,13 @@ services:
 
     ports:
       - "${HOST_PORT:-7860}:7860"
+
+    # Trọng số đã nằm sẵn ở ./models nhờ model-fetcher. App không khởi động
+    # nếu bước đó hỏng — thà dừng còn hơn chạy rồi đổ traceback sau 2 phút
+    # nạp model, hoặc tệ hơn là lặng lẽ tải 65GB từ Hub.
+    depends_on:
+      model-fetcher:
+        condition: service_completed_successfully
 
     # HF_TOKEN và các QIE_* lấy từ .env của project.
     env_file:
@@ -70,8 +107,9 @@ services:
       QIE_WARMUP: "true"
 
     volumes:
-      # Trọng số read-only: container chỉ đọc, download chạy ở host.
-      # Sau khi bỏ 5 shard transformer BF16 không dùng tới thì còn ~26GB.
+      # Trọng số read-only: container này chỉ đọc. Ghi vào đây là việc của
+      # model-fetcher. Sau khi bỏ 5 shard transformer BF16 không dùng tới
+      # thì còn ~26GB.
       - ./models:/app/models:ro
       # Cache HF ghi được (thực tế rỗng vì HF_HUB_OFFLINE=1) + chỗ Gradio
       # ghi file tạm.

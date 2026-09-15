@@ -9,6 +9,20 @@ models/
 # Secret: HF_TOKEN được nạp lúc chạy qua env_file, không bake vào image.
 .env
 
+# Key service account GCS. Chỉ được mount vào container fetcher lúc chạy,
+# tuyệt đối không nằm trong build context: mọi thứ trong context đều được
+# gửi cho daemon và có thể lọt vào một layer.
+secrets/
+ai-asset*.json
+*-key.json
+*service-account*.json
+
+# Archive trọng số do pack_models.sh dựng ra — hàng chục GB, cùng lý do với
+# models/ ở trên.
+models.zip
+models.tar
+models.tar.*
+
 .venv/
 .git/
 .gradio/

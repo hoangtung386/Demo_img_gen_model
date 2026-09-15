@@ -1,5 +1,5 @@
 .PHONY: build run logs link stop shell ps clean download preflight \
-        preflight-docker benchmark gpu-info
+        preflight-docker benchmark gpu-info pack fetch
 
 # Cổng host; đổi khi 7860 đang bận: make run HOST_PORT=7861
 HOST_PORT ?= 7860
@@ -37,6 +37,16 @@ gpu-info:
 # dùng tới; đặt QIE_DOWNLOAD_BASE_TRANSFORMER=true nếu muốn bản repo đầy đủ.
 download:
 	python scripts/download_model.py
+
+# Đóng gói ./models thành models.tar.zst để đẩy lên GCS. Thêm đích để
+# upload luôn:  make pack DEST=gs://my-bucket/qwen/
+pack:
+	scripts/pack_models.sh models.tar.zst $(DEST)
+
+# Chạy riêng bước kéo trọng số từ GCS (bình thường `make run` tự chạy trước
+# app). Dùng khi muốn tải trước, hoặc để đọc log tải mà không lẫn log model.
+fetch:
+	docker compose run --rm model-fetcher
 
 # Kiểm tra cây model trên đĩa trước khi tốn 2 phút load. Không cần GPU.
 preflight:
