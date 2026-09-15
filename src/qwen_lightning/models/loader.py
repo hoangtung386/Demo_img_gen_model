@@ -10,6 +10,7 @@ import torch
 from diffusers import (
     FlowMatchEulerDiscreteScheduler,
     QwenImageEditPlusPipeline,
+    QwenImagePipeline,
 )
 from nunchaku import NunchakuQwenImageTransformer2DModel
 from nunchaku.utils import get_precision
@@ -131,3 +132,52 @@ def load_pipeline(
         settings.text_encoder_device,
     )
     return pipeline
+
+
+def build_t2i_pipeline(
+    edit_pipeline: QwenImageEditPlusPipeline,
+) -> QwenImagePipeline:
+    """Pipeline text-to-image dùng CHUNG module với pipeline edit.
+
+    Tab "Prompt to Image" cần sinh ảnh không có ảnh vào, mà
+    ``QwenImageEditPlusPipeline`` bắt buộc phải có ``image=``. Hai pipeline
+    nhận đúng cùng 5 component (scheduler, vae, text_encoder, tokenizer,
+    transformer) và gọi transformer bằng CÙNG một chữ ký — chỉ khác ở chỗ
+    bản edit nối thêm latent của ảnh điều kiện vào hidden_states và cắt lại
+    output. Nên dựng thêm một pipeline trỏ vào đúng các object đó là đủ:
+    **không tốn thêm một byte VRAM nào**.
+
+    KHÔNG dùng ``QwenImagePipeline.from_pipe()``: nó mặc định
+    ``torch_dtype=torch.float32`` rồi gọi ``new_pipeline.to(dtype=...)`` trên
+    chính các module đang dùng chung — cast transformer INT4 và text_encoder
+    bf16 sang fp32, hỏng luôn cả pipeline edit. Dựng tay thì không có đường
+    nào để lọt chuyện đó.
+
+    Lưu ý chất lượng: trọng số ở đây là Qwen-Image-**Edit**-2509 Lightning,
+    tinh chỉnh cho việc sửa ảnh. Sinh ảnh từ chữ vẫn chạy nhưng không phải
+    thứ nó được luyện, nên đừng kỳ vọng ngang bản Qwen-Image gốc.
+    """
+    t2i = QwenImagePipeline(
+        scheduler=edit_pipeline.scheduler,
+        vae=edit_pipeline.vae,
+        text_encoder=edit_pipeline.text_encoder,
+        tokenizer=edit_pipeline.tokenizer,
+        transformer=edit_pipeline.transformer,
+    )
+
+    # Chiến lược offload 'split' ghim _execution_device bằng một subclass
+    # riêng cho instance (xem offload._pin_execution_device). Pipeline mới
+    # không thừa hưởng, nên phải gắn lại đúng property đó — thiếu bước này
+    # thì latents rơi về card của text_encoder trong khi transformer nằm ở
+    # card khác.
+    pinned = type(edit_pipeline).__dict__.get("_execution_device")
+    if isinstance(pinned, property):
+        t2i.__class__ = type(
+            f"{t2i.__class__.__name__}Pinned",
+            (t2i.__class__,),
+            {"_execution_device": pinned},
+        )
+        logger.info("T2I pipeline pinned to %s", t2i._execution_device)
+
+    logger.info("Text-to-image pipeline ready (dùng chung weights, +0 VRAM)")
+    return t2i

@@ -27,9 +27,9 @@ from PIL import Image
 
 from ..config import load_settings
 from ..device import select_device
-from ..inference import DEFAULT_OUTPUT_AREA, generate
+from ..inference import DEFAULT_OUTPUT_AREA, generate, generate_t2i
 from ..logging_setup import configure_logging
-from ..models.loader import load_pipeline
+from ..models.loader import build_t2i_pipeline, load_pipeline
 from ..tuning import apply_gpu_tuning, warmup
 from . import examples_spec as spec
 from . import prompts
@@ -141,6 +141,70 @@ OUTPUT_PRESETS: dict[str, int] = {
     "Rất nhanh — 704px (~0.5 MP)": 704 * 704,
 }
 
+# Tab 6 không có ảnh nền để lấy tỉ lệ khung, nên người dùng phải chọn. Diện
+# tích vẫn lấy từ OUTPUT_PRESETS ở trên; hai thứ ghép lại ra chiều rộng và
+# chiều cao qua calculate_dimensions.
+ASPECT_RATIOS: dict[str, float] = {
+    "1:1 — vuông": 1.0,
+    "16:9 — ngang": 16 / 9,
+    "9:16 — dọc (điện thoại)": 9 / 16,
+    "4:3 — ngang": 4 / 3,
+    "3:4 — dọc": 3 / 4,
+    "3:2 — ảnh chụp": 3 / 2,
+    "2:3 — chân dung": 2 / 3,
+}
+
+
+def _params_block(
+    default_negative: str, default_steps: int
+) -> tuple[gr.Textbox, gr.Slider, gr.Number, gr.Slider, gr.Dropdown]:
+    """Negative prompt + các tham số lấy mẫu.
+
+    Tách riêng khỏi ``_advanced_block`` vì tab 6 và 7 để người dùng tự viết
+    prompt ở ô chính, không có prompt hệ thống nào để hiện trong accordion.
+    """
+    negative_box = gr.Textbox(
+        label="Negative prompt",
+        value=default_negative,
+        lines=3,
+        info="Chỉ có tác dụng khi true_cfg_scale > 1.0.",
+    )
+    with gr.Row():
+        cfg = gr.Slider(
+            label="true_cfg_scale",
+            minimum=1.0,
+            maximum=10.0,
+            value=1.0,
+            step=0.5,
+            info="Lightning chạy tốt nhất ở 1.0",
+        )
+        seed = gr.Number(
+            label="Seed (-1 = ngẫu nhiên)", value=-1, precision=0
+        )
+        steps = gr.Slider(
+            label="Số bước",
+            minimum=4,
+            maximum=12,
+            value=default_steps,
+            step=1,
+            info="Nên giữ đúng số bước mà weights Lightning được luyện",
+        )
+    resolution = gr.Dropdown(
+        label="Độ phân giải đầu ra",
+        choices=list(OUTPUT_PRESETS),
+        value=next(iter(OUTPUT_PRESETS)),
+        info="Hạ xuống để chạy nhanh hơn, đổi lại mất chi tiết.",
+    )
+    return negative_box, cfg, seed, steps, resolution
+
+
+def _params_accordion(
+    default_negative: str, default_steps: int
+) -> tuple[gr.Textbox, gr.Slider, gr.Number, gr.Slider, gr.Dropdown]:
+    """``_params_block`` gói trong accordion — cho tab prompt tự do."""
+    with gr.Accordion("Tuỳ chỉnh nâng cao", open=False):
+        return _params_block(default_negative, default_steps)
+
 
 def _advanced_block(
     default_prompt: str, default_negative: str, default_steps: int
@@ -148,7 +212,7 @@ def _advanced_block(
     gr.Textbox, gr.Textbox, gr.Slider, gr.Number, gr.Slider, gr.Dropdown,
     gr.Button,
 ]:
-    """Khối tham số nâng cao dùng chung cho cả ba tab."""
+    """Khối nâng cao cho các tab có prompt hệ thống sinh sẵn."""
     with gr.Accordion("Tuỳ chỉnh nâng cao", open=False):
         prompt_box = gr.Textbox(
             label="Prompt gửi cho model",
@@ -160,37 +224,8 @@ def _advanced_block(
             ),
         )
         reset_btn = gr.Button("Khôi phục prompt mặc định", size="sm")
-        negative_box = gr.Textbox(
-            label="Negative prompt",
-            value=default_negative,
-            lines=3,
-            info="Chỉ có tác dụng khi true_cfg_scale > 1.0.",
-        )
-        with gr.Row():
-            cfg = gr.Slider(
-                label="true_cfg_scale",
-                minimum=1.0,
-                maximum=10.0,
-                value=1.0,
-                step=0.5,
-                info="Lightning chạy tốt nhất ở 1.0",
-            )
-            seed = gr.Number(
-                label="Seed (-1 = ngẫu nhiên)", value=-1, precision=0
-            )
-            steps = gr.Slider(
-                label="Số bước",
-                minimum=4,
-                maximum=12,
-                value=default_steps,
-                step=1,
-                info="Nên giữ đúng số bước mà weights Lightning được luyện",
-            )
-        resolution = gr.Dropdown(
-            label="Độ phân giải đầu ra",
-            choices=list(OUTPUT_PRESETS),
-            value=next(iter(OUTPUT_PRESETS)),
-            info="Hạ xuống để chạy nhanh hơn, đổi lại mất chi tiết.",
+        negative_box, cfg, seed, steps, resolution = _params_block(
+            default_negative, default_steps
         )
     return prompt_box, negative_box, cfg, seed, steps, resolution, reset_btn
 
@@ -215,6 +250,7 @@ def build_ui(
     pipeline: QwenImageEditPlusPipeline,
     num_steps: int,
     demo_cache: bool = True,
+    t2i_pipeline=None,
 ) -> gr.Blocks:
     """Build and return the Gradio Blocks interface.
 
@@ -249,14 +285,33 @@ def build_ui(
             match_input_size,
         )
 
-    title = "Qwen-Image-Edit-2509 Lightning — Demo 5 task"
+    def _run_t2i(prompt_text, negative, cfg, seed, steps, res, ratio):
+        """Sinh ảnh từ chữ — pipeline riêng, dùng chung weights."""
+        if t2i_pipeline is None:
+            return None, (
+                "Pipeline text-to-image chưa được dựng. Kiểm tra log khởi "
+                "động: build_t2i_pipeline() đã chạy chưa?"
+            )
+        return generate_t2i(
+            t2i_pipeline,
+            prompt_text,
+            cfg,
+            seed,
+            int(steps),
+            negative,
+            OUTPUT_PRESETS.get(res, DEFAULT_OUTPUT_AREA),
+            ASPECT_RATIOS.get(ratio, 1.0),
+        )
+
+    title = "Qwen-Image-Edit-2509 Lightning — Demo 7 task"
     with gr.Blocks(title=title) as demo:
         gr.Markdown(
             "# Qwen-Image-Edit-2509 Lightning (4-bit, 4-step)\n"
-            "Năm tab thử nghiệm: **Virtual Try-On**, **Home Design**, "
-            "**Image to Cartoon**, **Ghép 2 người ôm nhau** và "
-            "**Face Swap**. Mỗi tab có prompt chuyên biệt viết sẵn và ảnh "
-            "mẫu bấm-là-chạy."
+            "Năm tab đầu có prompt chuyên biệt viết sẵn và ảnh mẫu "
+            "bấm-là-chạy: **Virtual Try-On**, **Home Design**, **Image to "
+            "Cartoon**, **Ghép 2 người ôm nhau**, **Face Swap**. Hai tab "
+            "cuối để bạn tự viết prompt: **Prompt to Image** và **Image + "
+            "Prompt**."
         )
 
         # ------------------------------------------------------------------
@@ -834,6 +889,139 @@ def build_ui(
                 outputs=[fs_out, fs_status],
             )
 
+        # ------------------------------------------------------------------
+        # Tab 6 — Prompt to Image
+        # ------------------------------------------------------------------
+        with gr.Tab("6. Prompt to Image"):
+            gr.Markdown(
+                "Không cần ảnh vào — chỉ mô tả bằng chữ, model sinh ảnh "
+                "mới. Chọn tỉ lệ khung vì ở đây không có ảnh nền để bám "
+                "theo.\n"
+                "> Trọng số đang chạy là Qwen-Image-**Edit**-2509 Lightning, "
+                "tinh chỉnh cho việc *sửa* ảnh. Sinh ảnh từ chữ vẫn chạy "
+                "(dùng chung weights, không tốn thêm VRAM) nhưng không phải "
+                "thứ nó được luyện — đừng kỳ vọng ngang bản Qwen-Image gốc. "
+                "Muốn sửa một tấm ảnh có sẵn thì dùng tab 7."
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    t2i_prompt = gr.Textbox(
+                        label="Prompt — mô tả ảnh bạn muốn",
+                        placeholder=(
+                            "Tiếng Anh cho kết quả bám sát hơn. Tả càng cụ "
+                            "thể càng tốt: chủ thể, bối cảnh, ánh sáng, góc "
+                            "máy, phong cách."
+                        ),
+                        lines=6,
+                    )
+                    t2i_ratio = gr.Dropdown(
+                        label="Tỉ lệ khung",
+                        choices=list(ASPECT_RATIOS),
+                        value=next(iter(ASPECT_RATIOS)),
+                    )
+                    t2i_run = gr.Button("Sinh ảnh", variant="primary")
+                    (
+                        t2i_negative,
+                        t2i_cfg,
+                        t2i_seed,
+                        t2i_steps,
+                        t2i_res,
+                    ) = _params_accordion(prompts.FREE_NEGATIVE, num_steps)
+                    # Chỉ điền vào ô prompt, KHÔNG chạy model: tab này không
+                    # có ảnh dựng sẵn nên chạy luôn sẽ mất 6-12s mỗi lần bấm.
+                    gr.Examples(
+                        examples=[[x] for x in prompts.T2I_EXAMPLES],
+                        inputs=[t2i_prompt],
+                        label="Prompt mẫu — bấm để điền vào ô trên",
+                        examples_per_page=6,
+                    )
+                with gr.Column(scale=1):
+                    t2i_out, t2i_status = _output_block()
+
+            t2i_run.click(
+                fn=_run_t2i,
+                inputs=[
+                    t2i_prompt,
+                    t2i_negative,
+                    t2i_cfg,
+                    t2i_seed,
+                    t2i_steps,
+                    t2i_res,
+                    t2i_ratio,
+                ],
+                outputs=[t2i_out, t2i_status],
+            )
+
+        # ------------------------------------------------------------------
+        # Tab 7 — Image + Prompt to Image
+        # ------------------------------------------------------------------
+        with gr.Tab("7. Image + Prompt"):
+            gr.Markdown(
+                "Upload một ảnh và tự viết yêu cầu sửa. Đây là tab tổng "
+                "quát — sáu tab trên chỉ là những prompt chuyên biệt viết "
+                "sẵn cho cùng pipeline này.\n"
+                "> Ảnh ra bám tỉ lệ khung của ảnh vào. Nói rõ cái gì PHẢI "
+                "giữ nguyên, không chỉ cái cần đổi — đó là khác biệt lớn "
+                "nhất giữa một prompt sửa ảnh tốt và một prompt tệ."
+            )
+            with gr.Row():
+                with gr.Column(scale=1):
+                    edit_image = gr.Image(
+                        label="Ảnh cần sửa",
+                        type="pil",
+                        height=380,
+                    )
+                    edit_prompt = gr.Textbox(
+                        label="Yêu cầu sửa",
+                        placeholder=(
+                            "ví dụ: Change the season to winter, cover the "
+                            "ground with snow. Keep the building, the camera "
+                            "angle and the people unchanged."
+                        ),
+                        lines=5,
+                    )
+                    edit_run = gr.Button("Sửa ảnh", variant="primary")
+                    (
+                        edit_negative,
+                        edit_cfg,
+                        edit_seed,
+                        edit_steps,
+                        edit_res,
+                    ) = _params_accordion(prompts.FREE_NEGATIVE, num_steps)
+                    gr.Examples(
+                        examples=[[x] for x in prompts.EDIT_EXAMPLES],
+                        inputs=[edit_prompt],
+                        label="Yêu cầu mẫu — bấm để điền vào ô trên",
+                        examples_per_page=6,
+                    )
+                with gr.Column(scale=1):
+                    edit_out, edit_status = _output_block()
+
+            def on_edit(image, prompt_text, negative, cfg, seed, steps, res):
+                if image is None:
+                    return None, "Vui lòng upload ảnh cần sửa."
+                if not prompt_text or not prompt_text.strip():
+                    return None, "Vui lòng nhập yêu cầu sửa ảnh."
+                # note="" vì ô prompt ở đây CHÍNH LÀ prompt của người dùng,
+                # không có prompt hệ thống nào để nối thêm vào.
+                return _run(
+                    [image], prompt_text, "", negative, cfg, seed, steps, res,
+                )
+
+            edit_run.click(
+                fn=on_edit,
+                inputs=[
+                    edit_image,
+                    edit_prompt,
+                    edit_negative,
+                    edit_cfg,
+                    edit_seed,
+                    edit_steps,
+                    edit_res,
+                ],
+                outputs=[edit_out, edit_status],
+            )
+
     return demo
 
 
@@ -874,7 +1062,21 @@ def main() -> None:
         warmup(pipeline, settings.num_steps, DEFAULT_OUTPUT_AREA)
     logger.info("Ready.")
 
-    demo = build_ui(pipeline, settings.num_steps, settings.demo_cache)
+    # Pipeline text-to-image cho tab 6. Dùng chung đúng các module đã nạp
+    # nên không tốn thêm VRAM; hỏng thì chỉ tab 6 báo lỗi, sáu tab kia vẫn
+    # chạy bình thường.
+    try:
+        t2i_pipeline = build_t2i_pipeline(pipeline)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Không dựng được pipeline text-to-image: %s", exc)
+        t2i_pipeline = None
+
+    demo = build_ui(
+        pipeline,
+        settings.num_steps,
+        settings.demo_cache,
+        t2i_pipeline=t2i_pipeline,
+    )
     _launch_with_public_link(demo, settings)
 
 

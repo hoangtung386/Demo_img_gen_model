@@ -182,7 +182,7 @@ python scripts/serve.py
 # hoặc: uv run run-app
 ```
 
-Mở trình duyệt tại `http://<server-ip>:7860`. Giao diện có **5 tab**, mỗi tab đã
+Mở trình duyệt tại `http://<server-ip>:7860`. Giao diện có **7 tab**. Năm tab đầu đã
 có prompt chuyên biệt viết sẵn (xem `src/qwen_lightning/ui/prompts.py`):
 
 | Tab | Đầu vào | Kết quả |
@@ -192,8 +192,34 @@ có prompt chuyên biệt viết sẵn (xem `src/qwen_lightning/ui/prompts.py`):
 | **3. Image to Cartoon** | 1 ảnh chụp có người và phong cảnh | Toàn bộ người trong ảnh thành nhân vật hoạt hình giữ tối đa nét mặt, kiểu tóc, vóc dáng, trang phục; phong cảnh vẽ lại cùng phong cách |
 | **4. Ghép 2 người ôm nhau** | Ảnh 1: người thứ nhất — Ảnh 2: người thứ hai *(ảnh nền)* | Một ảnh duy nhất hai người đang ôm nhau, giữ khuôn mặt, kiểu tóc, vóc dáng và trang phục của từng người |
 | **5. Face Swap** | Ảnh 1: mặt đã crop — Ảnh 2: ảnh đầy đủ có người và phong cảnh *(ảnh nền)* | Chính ảnh 2 nhưng khuôn mặt đã đổi sang người ở ảnh 1, giữ nguyên phong cảnh, quần áo, dáng người, khung hình — và trả về **đúng kích thước pixel của ảnh 2** |
+| **6. Prompt to Image** | Chỉ prompt + tỉ lệ khung, **không cần ảnh** | Ảnh mới sinh hoàn toàn từ mô tả |
+| **7. Image + Prompt** | 1 ảnh + yêu cầu sửa tự viết | Ảnh đã sửa theo yêu cầu — tab tổng quát, sáu tab trên chỉ là prompt chuyên biệt viết sẵn cho cùng pipeline này |
 
-Mỗi tab có khối **Ví dụ mẫu** với 3 test case, bảng chỉ hiện các cột đầu vào.
+Năm tab đầu có khối **Ví dụ mẫu** với 3 test case, bảng chỉ hiện các cột đầu
+vào. Tab 6 và 7 thì ví dụ chỉ **điền vào ô prompt** chứ không chạy model —
+chúng không có ảnh dựng sẵn để trả về, chạy luôn mỗi lần bấm sẽ mất 6–12s.
+
+### Tab 6 — Prompt to Image, và vì sao nó không dùng chung pipeline
+
+`QwenImageEditPlusPipeline` bắt buộc phải có `image=`, nên sinh ảnh từ chữ
+cần `QwenImagePipeline`. Hai pipeline nhận đúng cùng 5 component và gọi
+transformer bằng **cùng một chữ ký** — bản edit chỉ nối thêm latent ảnh điều
+kiện vào `hidden_states` rồi cắt lại output. Nên `build_t2i_pipeline()` chỉ
+dựng thêm một pipeline trỏ vào đúng các object đã nạp: **không tốn thêm một
+byte VRAM**.
+
+Không dùng `QwenImagePipeline.from_pipe()` cho việc này: nó mặc định
+`torch_dtype=torch.float32` rồi gọi `new_pipeline.to(dtype=...)` lên chính
+các module đang dùng chung — cast transformer INT4 và text_encoder bf16 sang
+fp32, hỏng luôn cả pipeline edit.
+
+**Về chất lượng:** trọng số là Qwen-Image-**Edit**-2509 Lightning, tinh chỉnh
+cho việc *sửa* ảnh. Sinh ảnh từ chữ vẫn chạy nhưng không phải thứ nó được
+luyện — đừng kỳ vọng ngang bản Qwen-Image gốc. Tab này để thử, không phải để
+thay một model text-to-image thật.
+
+Tab 6 không có ảnh nền nên tỉ lệ khung phải chọn tay (1:1, 16:9, 9:16, 4:3,
+3:4, 3:2, 2:3); diện tích vẫn lấy từ *Độ phân giải đầu ra*.
 
 ### Chế độ demo (`QIE_DEMO_CACHE`, mặc định bật)
 

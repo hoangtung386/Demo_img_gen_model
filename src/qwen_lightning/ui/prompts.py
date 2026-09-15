@@ -301,6 +301,49 @@ def build_faceswap_prompt(scope_label: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# Tab 6 & 7 — prompt tự do
+# --------------------------------------------------------------------------
+#
+# Hai tab này KHÔNG có prompt hệ thống: người dùng tự viết toàn bộ. Chỉ để
+# sẵn một negative prompt chung và vài ví dụ để có chỗ bắt đầu.
+
+FREE_NEGATIVE = (
+    "blurry, low quality, low resolution, jpeg artifacts, oversaturated, "
+    "distorted anatomy, deformed hands, extra fingers, extra limbs, "
+    "disfigured face, bad proportions, watermark, text, signature, logo, "
+    "cropped, out of frame"
+)
+
+# Prompt mẫu cho tab 6. Bấm vào chỉ điền vào ô prompt, KHÔNG chạy model —
+# khác các tab kia vì ở đây không có ảnh dựng sẵn để trả về.
+T2I_EXAMPLES: list[str] = [
+    "A misty pine forest at sunrise, volumetric light rays through the "
+    "trees, a narrow dirt path in the foreground, photorealistic, 35mm",
+    "Studio product photo of a matte black ceramic coffee mug on a light "
+    "grey backdrop, soft diffused lighting, shallow depth of field",
+    "A cozy Scandinavian living room in the late afternoon, light oak "
+    "floor, cream sofa, tall green plants, warm sunlight through sheer "
+    "curtains, interior photography",
+    "Watercolour illustration of a red fishing boat moored at a quiet "
+    "harbour, loose brush strokes, muted palette, soft paper texture",
+    "Close-up macro of a dew-covered spider web at dawn, backlit, bokeh "
+    "background, extremely sharp detail",
+]
+
+# Yêu cầu sửa ảnh mẫu cho tab 7.
+EDIT_EXAMPLES: list[str] = [
+    "Change the season to winter: cover the ground and roofs with snow, "
+    "bare the trees, cool the light. Keep everything else unchanged.",
+    "Make it night time with warm street lights on, keep the same "
+    "composition, buildings and camera angle.",
+    "Remove the text and the logo from the image, fill the area so it "
+    "matches the surrounding surface.",
+    "Change the colour of the car to deep matte green, keep its shape, "
+    "reflections and the background exactly as they are.",
+]
+
+
+# --------------------------------------------------------------------------
 
 
 def append_note(prompt: str, extra_note: str) -> str:

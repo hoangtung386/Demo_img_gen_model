@@ -8,7 +8,7 @@ from collections import OrderedDict
 from typing import Any
 
 import torch
-from diffusers import QwenImageEditPlusPipeline
+from diffusers import QwenImageEditPlusPipeline, QwenImagePipeline
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit_plus import (
     CONDITION_IMAGE_SIZE,
     calculate_dimensions,
@@ -26,6 +26,13 @@ _EMBED_CACHE: OrderedDict[str, tuple[torch.Tensor, torch.Tensor]] = (
     OrderedDict()
 )
 _EMBED_CACHE_MAX = 8
+
+# Cache riêng cho text-to-image: ở đó encode_prompt KHÔNG nhận ảnh nên khoá
+# chỉ là prompt. Trộn chung một cache với bản edit sẽ cho hai embedding khác
+# nhau cùng khoá khi prompt trùng mà một bên có ảnh điều kiện.
+_T2I_EMBED_CACHE: OrderedDict[str, tuple[torch.Tensor, torch.Tensor]] = (
+    OrderedDict()
+)
 
 
 def _to_pil(item: Any) -> Image.Image:
@@ -98,6 +105,25 @@ def _encode_prompt_cached(
     return (embeds, mask), False
 
 
+def _split_timings(
+    step_marks: list[float], pipe_start: float, end: float
+) -> tuple[float, float, float, float]:
+    """Tách thời gian pipeline thành (denoise, mỗi bước, chuẩn bị, decode).
+
+    ``callback_on_step_end`` chỉ chạy SAU khi một bước kết thúc, nên mốc đầu
+    tiên đã nằm sau bước 1: khoảng pipe_start -> mốc đầu = chuẩn bị CỘNG một
+    bước denoise, và các mốc chỉ bao được num_steps-1 bước. Phải trừ ra, nếu
+    không phần chuẩn bị bị thổi lên gấp nhiều lần giá trị thật.
+    """
+    if len(step_marks) < 2:
+        return 0.0, 0.0, end - pipe_start, 0.0
+    per_step = (step_marks[-1] - step_marks[0]) / (len(step_marks) - 1)
+    denoise_s = per_step * len(step_marks)
+    prep_s = step_marks[0] - pipe_start - per_step
+    decode_s = end - step_marks[-1]
+    return denoise_s, per_step, prep_s, decode_s
+
+
 def generate(
     pipeline: QwenImageEditPlusPipeline,
     images: list[Any],
@@ -159,10 +185,6 @@ def generate(
         )
     text_s = time.time() - start
 
-    # ``callback_on_step_end`` chỉ chạy SAU khi một bước kết thúc, nên mốc
-    # đầu tiên đã nằm sau bước 1: khoảng pipe_start -> mốc đầu = chuẩn bị
-    # CỘNG một bước denoise, và các mốc chỉ bao được num_steps-1 bước. Phải
-    # trừ ra, nếu không phần chuẩn bị bị thổi lên gấp nhiều lần giá trị thật.
     step_marks: list[float] = []
 
     def _on_step(pipe, step, timestep, kwargs):  # noqa: ANN001
@@ -198,16 +220,9 @@ def generate(
     if match_input_size and result.size != (base_w, base_h):
         result = result.resize((base_w, base_h), Image.LANCZOS)
 
-    if len(step_marks) >= 2:
-        per_step = (step_marks[-1] - step_marks[0]) / (len(step_marks) - 1)
-        denoise_s = per_step * len(step_marks)
-        prep_s = step_marks[0] - pipe_start - per_step
-        decode_s = end - step_marks[-1]
-    else:
-        per_step = 0.0
-        denoise_s = 0.0
-        prep_s = end - pipe_start
-        decode_s = 0.0
+    denoise_s, per_step, prep_s, decode_s = _split_timings(
+        step_marks, pipe_start, end
+    )
     text_label = (
         f"{text_s:.1f}s (cache)" if was_cached else f"{text_s:.1f}s"
     )
@@ -229,6 +244,118 @@ def generate(
         f"({per_step:.2f}s/bước) + text {text_label} + "
         f"prep {prep_s:.1f}s + decode {decode_s:.1f}s\n"
         f"{size_label} · {num_steps} bước · cfg {true_cfg_scale} · "
+        f"seed {seed}"
+    )
+    logger.info(info.replace("\n", " | "))
+    return result, info
+
+
+def _encode_t2i_cached(
+    pipeline: QwenImagePipeline, prompt: str
+) -> tuple[tuple[torch.Tensor, torch.Tensor], bool]:
+    """Như ``_encode_prompt_cached`` nhưng cho text-to-image (không có ảnh)."""
+    key = hashlib.blake2b(
+        prompt.encode("utf-8"), digest_size=16
+    ).hexdigest()
+
+    cached = _T2I_EMBED_CACHE.get(key)
+    if cached is not None:
+        _T2I_EMBED_CACHE.move_to_end(key)
+        return cached, True
+
+    embeds, mask = pipeline.encode_prompt(
+        prompt=prompt,
+        device=pipeline._execution_device,
+        num_images_per_prompt=1,
+        max_sequence_length=1024,
+    )
+    _T2I_EMBED_CACHE[key] = (embeds, mask)
+    while len(_T2I_EMBED_CACHE) > _EMBED_CACHE_MAX:
+        _T2I_EMBED_CACHE.popitem(last=False)
+    return (embeds, mask), False
+
+
+def generate_t2i(
+    pipeline: QwenImagePipeline,
+    prompt: str,
+    true_cfg_scale: float,
+    seed: int,
+    num_steps: int,
+    negative_prompt: str | None = None,
+    output_area: int = DEFAULT_OUTPUT_AREA,
+    aspect_ratio: float = 1.0,
+) -> tuple[Image.Image | None, str]:
+    """Sinh ảnh từ chữ, không có ảnh đầu vào.
+
+    Khác ``generate()`` ở ba chỗ, đều do không có ảnh điều kiện:
+      - khung ảnh ra suy từ ``aspect_ratio`` người dùng chọn chứ không bám
+        theo ảnh nền;
+      - ``encode_prompt`` không nhận ``image``, nên cache khoá theo prompt;
+      - pipeline là ``QwenImagePipeline`` (xem ``models.loader``).
+
+    ``negative_prompt`` chỉ có tác dụng khi ``true_cfg_scale > 1.0``.
+    """
+    if not prompt or not prompt.strip():
+        return None, "Vui lòng nhập prompt mô tả ảnh cần sinh."
+
+    width, height = calculate_dimensions(output_area, aspect_ratio)
+
+    if seed is None or seed < 0:
+        seed = int(torch.randint(0, 2**32 - 1, (1,)).item())
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+
+    logger.info(
+        "T2I out=%dx%d, prompt=%r, cfg=%s, seed=%d",
+        width,
+        height,
+        prompt[:80],
+        true_cfg_scale,
+        seed,
+    )
+
+    start = time.time()
+    with torch.inference_mode():
+        (prompt_embeds, prompt_embeds_mask), was_cached = _encode_t2i_cached(
+            pipeline, prompt
+        )
+    text_s = time.time() - start
+
+    step_marks: list[float] = []
+
+    def _on_step(pipe, step, timestep, kwargs):  # noqa: ANN001
+        step_marks.append(time.time())
+        return kwargs
+
+    extra: dict[str, Any] = {}
+    if negative_prompt and negative_prompt.strip():
+        extra["negative_prompt"] = negative_prompt.strip()
+
+    pipe_start = time.time()
+    with torch.inference_mode():
+        output = pipeline(
+            prompt_embeds=prompt_embeds,
+            prompt_embeds_mask=prompt_embeds_mask,
+            height=height,
+            width=width,
+            true_cfg_scale=true_cfg_scale,
+            num_inference_steps=num_steps,
+            generator=generator,
+            callback_on_step_end=_on_step,
+            **extra,
+        )
+    end = time.time()
+    elapsed = end - start
+    result = output.images[0]
+
+    denoise_s, per_step, prep_s, decode_s = _split_timings(
+        step_marks, pipe_start, end
+    )
+    text_label = f"{text_s:.1f}s (cache)" if was_cached else f"{text_s:.1f}s"
+    info = (
+        f"⚡ GPU {elapsed:.1f}s  =  denoise {denoise_s:.1f}s "
+        f"({per_step:.2f}s/bước) + text {text_label} + "
+        f"prep {prep_s:.1f}s + decode {decode_s:.1f}s\n"
+        f"{width}×{height} · {num_steps} bước · cfg {true_cfg_scale} · "
         f"seed {seed}"
     )
     logger.info(info.replace("\n", " | "))
