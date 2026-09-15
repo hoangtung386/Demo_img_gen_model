@@ -1,0 +1,117 @@
+# ============================================================
+# Bí mật — KHÔNG BAO GIỜ commit
+# ============================================================
+.env
+.env.*
+!config/example.env
+.model_paths.env
+*.pem
+*.key
+service-account*.json
+gcp-credentials*.json
+
+# ============================================================
+# Trọng số model (~27GB) và mọi thứ HuggingFace tải về
+# ============================================================
+# Dấu "/" đầu là BẮT BUỘC: "models/" không có nó sẽ khớp thư mục tên models ở
+# MỌI cấp, nuốt luôn src/qwen_lightning/models/ (loader.py, offload.py) và
+# repo clone về sẽ thiếu code.
+/models/
+
+# Lưới an toàn: chặn file trọng số ở BẤT KỲ đâu, kể cả khi ai đó
+# để nhầm ngoài models/. Một file .safetensors lọt vào lịch sử git
+# là phải rewrite history mới gỡ ra được.
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.gguf
+*.msgpack
+*.h5
+
+# Cache HuggingFace nếu ai đó trỏ HF_HOME ra ngoài models/
+.hf/
+.cache/
+
+# ============================================================
+# Môi trường Python (.venv ở đây nặng ~15GB)
+# ============================================================
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+
+# ============================================================
+# Cache công cụ
+# ============================================================
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ============================================================
+# Gradio / runtime
+# ============================================================
+# Thư mục tạm + file flag Gradio sinh lúc chạy.
+.gradio/
+flagged/
+gradio_cached_examples/
+
+# Log chạy nền (README hướng dẫn nohup ... > serve.log).
+*.log
+nohup.out
+
+# Ảnh sinh ra lúc chạy. Hai lưu ý:
+#  - KHÔNG dùng pattern *.png / *.jpg toàn cục: examples/ là asset của demo và
+#    phải được commit — xem ghi chú cuối file.
+#  - Dấu "/" đầu cũng bắt buộc ở đây, nếu không "outputs/" sẽ khớp cả
+#    examples/outputs/ và xoá mất ảnh kết quả dựng sẵn.
+/outputs/
+/output/
+/results/
+/tmp/
+/temp/
+
+# ============================================================
+# IDE / hệ điều hành
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Công cụ trợ lý
+# ============================================================
+.claude-dev-helper/
+.claude/settings.local.json
+
+# ============================================================
+# GIỮ LẠI có chủ đích
+# ============================================================
+# examples/          (3.5MB) ảnh mẫu + kết quả dựng sẵn. Đây là ASSET chức
+#                    năng, không phải data: Dockerfile COPY vào image và UI
+#                    đọc để hiện ví dụ bấm-là-chạy. Thiếu thì tính năng demo
+#                    cache mất tác dụng. Giấy phép từng ảnh ghi trong
+#                    examples/README.md.
+# uv.lock            (450KB) khoá phiên bản — bắt buộc commit để build lặp lại được.
+# config/example.env template biến môi trường, không chứa bí mật.
+#
+# Muốn loại kết quả dựng sẵn khỏi repo thì thêm: examples/outputs/

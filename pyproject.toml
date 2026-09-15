@@ -1,0 +1,73 @@
+[project]
+name = "qwen-image-edit-2509-lightning"
+version = "0.1.0"
+description = "Gradio demo for Qwen-Image-Edit-2509 Lightning (4-bit, 4-step) via Nunchaku"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gradio==6.24.0",
+    "torch==2.9.0",
+    # Không nâng quá 0.36: nunchaku 1.2.1 chỉ được CI test với diffusers
+    # 0.36, và từ 0.37 trở đi chữ ký QwenEmbedRope.forward() đã đổi
+    # (txt_seq_lens -> max_txt_seq_len) khiến transformer nunchaku gọi sai:
+    #   TypeError: got multiple values for argument 'device'
+    "diffusers==0.36.0",
+    "transformers==5.15.0",
+    "huggingface-hub==1.27.0",
+    "python-dotenv==1.2.2",
+    "pillow==12.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.16.3",
+    "pytest==9.1.1",
+]
+
+
+[project.scripts]
+download-model = "qwen_lightning.download:main"
+run-app = "qwen_lightning.serve:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qwen_lightning"]
+
+[tool.uv]
+prerelease = "allow"
+
+# --- Nunchaku: cài thủ công, KHÔNG khai báo trong [project.dependencies] ---
+#
+# Package tên "nunchaku" trên PyPI là một thư viện thống kê sinh học khác
+# hoàn toàn (piece-wise linear segmentation, tác giả Yu Huo) — KHÔNG phải
+# thư viện lượng tử hóa của nunchaku-tech. Cài nó vào sẽ gây ImportError:
+#   cannot import name 'NunchakuQwenImageTransformer2DModel'
+#
+# Nunchaku thật chỉ phát hành wheel trên GitHub releases, dựng riêng cho
+# từng tổ hợp python × torch × CUDA. Wheel phải khớp CẢ BA, nếu không sẽ
+# lỗi ABI lúc import.
+#
+# Tổ hợp đang dùng: py3.11 + torch 2.9 (cu128) + driver 12.4
+# Wheel cu12.8 chạy được trên driver 12.4 nhờ CUDA minor version
+# compatibility — không cần nâng driver.
+#
+#   uv pip install torch==2.9.0 torchvision \
+#       --index-url https://download.pytorch.org/whl/cu128
+#   uv pip install https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp311-cp311-linux_x86_64.whl
+#
+# Đổi phiên bản torch thì phải đổi wheel nunchaku tương ứng.
+# Danh sách wheel: https://github.com/nunchaku-tech/nunchaku/releases
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4"]

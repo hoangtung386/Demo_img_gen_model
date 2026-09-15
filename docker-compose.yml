@@ -1,0 +1,84 @@
+services:
+  qwen-lightning:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen-lightning:0.1.0
+    container_name: qwen-lightning
+
+    # Yêu cầu host: driver NVIDIA >= 525 (torch cu128 chạy nhờ CUDA minor
+    # version compatibility) và nvidia-container-toolkit đã cài + đăng ký
+    # runtime với Docker. Kiểm tra trước khi build:
+    #   docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+    gpus: all
+
+    ports:
+      - "${HOST_PORT:-7860}:7860"
+
+    # HF_TOKEN và các QIE_* lấy từ .env của project.
+    env_file:
+      - .env
+
+    # Ghi đè lên env_file cho những giá trị chỉ đúng bên trong container.
+    environment:
+      QIE_SERVER_NAME: "0.0.0.0"
+      QIE_PORT: "7860"
+
+      # .model_paths.env ghi đường dẫn tuyệt đối trên host nên vô nghĩa ở đây
+      # (đã loại khỏi image qua .dockerignore). Trỏ thẳng vào chỗ mount.
+      # Đổi QIE_RANK / QIE_NUM_STEPS / QIE_PRECISION thì sửa tên file này theo.
+      QIE_BASE_MODEL_LOCAL: /app/models/Qwen-Image-Edit-2509
+      QIE_TRANSFORMER_PATH: /app/models/lightning-251115/svdq-int4_r32-qwen-image-edit-2509-lightning-4steps-251115.safetensors
+
+      # --- Một card A100-40GB -------------------------------------------
+      # Tổng weight resident đo được là 26.4 GiB (text_encoder 15.4 +
+      # transformer INT4 10.7 + vae 0.24), vừa trong 39 GiB của A100 với
+      # ~13 GiB dư cho activation. 'none' giữ mọi component nằm lại trên GPU:
+      # không có lần chuyển CPU<->GPU nào lúc sinh ảnh.
+      #
+      # KHÔNG để 'auto' ở đây dù logic auto đã biết chọn đúng: production nên
+      # tự quyết định thay vì phụ thuộc vào dò phần cứng lúc chạy.
+      # Card nhỏ hơn 32 GiB thì đổi thành 'model' (chậm hơn nhiều, ~41s/ảnh).
+      QIE_OFFLOAD: "none"
+      QIE_DEVICE: "cuda:0"
+
+      # A100 là Ampere (sm_80) -> bắt buộc INT4. Chỉ Blackwell (sm_120/121)
+      # mới dùng FP4; nunchaku sẽ raise ValueError nếu đặt sai.
+      QIE_PRECISION: "int4"
+
+      # Toàn bộ weight đã nằm ở /app/models. Khoá Hub lại để một biến env
+      # thiếu không biến thành lần tải 65GB âm thầm giữa production.
+      HF_HOME: /app/.hf_cache
+      HF_HUB_OFFLINE: "1"
+      # Không có gì cần tải nên không cần token trong container. env_file nạp
+      # cả .env nên phải ghi đè tường minh để token không đi vào môi trường
+      # tiến trình.
+      HF_TOKEN: ""
+
+      # Allocator co giãn: kích thước ảnh ra thay đổi theo tỉ lệ ảnh người
+      # dùng nên mỗi request cấp phát một shape khác nhau. Không có cờ này
+      # thì phân mảnh sẽ đẩy service tới OOM dù VRAM còn trống.
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+      # Trả trước chi phí lượt sinh ảnh đầu tiên lúc khởi động, để người dùng
+      # đầu tiên không phải chờ nạp cubin + dựng CUDA context.
+      QIE_WARMUP: "true"
+
+    volumes:
+      # Trọng số read-only: container chỉ đọc, download chạy ở host.
+      # Sau khi bỏ 5 shard transformer BF16 không dùng tới thì còn ~26GB.
+      - ./models:/app/models:ro
+      # Cache HF ghi được (thực tế rỗng vì HF_HUB_OFFLINE=1) + chỗ Gradio
+      # ghi file tạm.
+      - hf-cache:/app/.hf_cache
+
+    shm_size: "1gb"
+
+    # Makefile dò phần cứng và set biến này: một GPU hoặc A100 => coi là
+    # server production => 'unless-stopped'. Máy nhiều GPU (bàn dev) giữ 'no'
+    # để app crash thì dừng hẳn, không bị restart lặp che mất traceback gốc.
+    # Ghi đè tay:  make run QIE_RESTART_POLICY=no
+    restart: "${QIE_RESTART_POLICY:-no}"
+
+volumes:
+  hf-cache:

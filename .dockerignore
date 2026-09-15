@@ -1,0 +1,26 @@
+# Trọng số 65GB — mount volume lúc chạy, tuyệt đối không đưa vào build
+# context (docker sẽ gửi toàn bộ context cho daemon trước khi build).
+models/
+
+# Đường dẫn tuyệt đối của HOST, vô nghĩa trong container. Compose set
+# QIE_BASE_MODEL_LOCAL / QIE_TRANSFORMER_PATH trỏ vào chỗ mount thay cho nó.
+.model_paths.env
+
+# Secret: HF_TOKEN được nạp lúc chạy qua env_file, không bake vào image.
+.env
+
+.venv/
+.git/
+.gradio/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.log
+docs/
+tests/
+.claude/
+.claude-dev-helper/
