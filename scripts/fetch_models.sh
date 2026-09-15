@@ -2,14 +2,12 @@
 #
 # Kéo trọng số từ Google Cloud Storage vào thư mục model, chạy một lần trước
 # khi app khởi động. Thay hẳn cho việc tải từ HuggingFace Hub: không cần
-# HF_TOKEN, không cần accept license lúc deploy.
+# HF_TOKEN, không cần accept license lúc deploy, không cần .env.
 #
 # Biến môi trường:
 #   QIE_MODELS_URI      gs://bucket/path — BẮT BUỘC. Xem phần "Dạng URI".
 #   QIE_MODELS_DIR      thư mục đích (mặc định /models)
-#   QIE_GCS_KEY_FILE    key service account (mặc định /secrets/gcs-key.json).
-#                       KHÔNG có file đó thì dùng ADC — đúng cách khi VM trên
-#                       GCE đã được gắn service account.
+#   QIE_GCS_KEY_FILE    key service account. Bỏ trống thì tự dò (xem _find_key)
 #   QIE_MODELS_REQUIRE  các đường dẫn tương đối phải tồn tại sau khi giải nén
 #   QIE_MODELS_FORCE    "true" => tải lại kể cả khi đã có sẵn
 #
@@ -26,12 +24,69 @@
 set -eu
 
 DIR="${QIE_MODELS_DIR:-/models}"
-KEY="${QIE_GCS_KEY_FILE:-/secrets/gcs-key.json}"
 REQUIRE="${QIE_MODELS_REQUIRE:-Qwen-Image-Edit-2509/model_index.json lightning-251115}"
 MARKER="$DIR/.fetched-from"
+STAGE="$DIR/.extract-tmp"
 
 log() { echo "[fetch-models] $*"; }
 die() { echo "[fetch-models] LỖI: $*" >&2; exit 1; }
+
+# Đường dẫn tương đối đầu tiên trong REQUIRE, dùng để nhận ra gốc archive.
+_first_require() { for r in $REQUIRE; do echo "$r"; return; done; }
+
+_find_key() {
+    # Thứ tự: biến môi trường -> chỗ mount chuyên dụng -> gốc repo. Gốc repo
+    # là chỗ người dùng thả file key sau khi clone, nên phải dò tới.
+    for c in "${QIE_GCS_KEY_FILE:-}" \
+             /secrets/gcs-key.json \
+             /secrets/ai-asset-amb.json \
+             /project/ai-asset-amb.json \
+             /project/secrets/gcs-key.json; do
+        if [ -n "$c" ] && [ -f "$c" ]; then echo "$c"; return; fi
+    done
+    for c in /project/ai-asset*.json /project/*service-account*.json; do
+        if [ -f "$c" ]; then echo "$c"; return; fi
+    done
+}
+
+_missing() {
+    m=""
+    for path in $REQUIRE; do
+        [ -e "$DIR/$path" ] || m="$m $path"
+    done
+    echo "$m"
+}
+
+# Dời nội dung từ thư mục tạm sang thư mục đích, bỏ cấp bọc ngoài nếu có.
+#
+# models.zip thường được đóng bằng `zip -r models.zip models/` nên bên trong
+# có đúng một cấp "models/". Giải thẳng vào /models sẽ ra /models/models/... và
+# app không tìm thấy gì. Nhận diện bằng chính REQUIRE chứ không đoán theo tên:
+# chỉ bỏ cấp bọc khi file bắt buộc nằm BÊN TRONG nó chứ không nằm ở gốc.
+_flatten_into() {
+    src="$1"
+    first="$(_first_require)"
+    inner="$src"
+
+    if [ ! -e "$src/$first" ]; then
+        for candidate in "$src"/*; do
+            if [ -d "$candidate" ] && [ -e "$candidate/$first" ]; then
+                inner="$candidate"
+                log "Archive bọc trong $(basename "$candidate")/ — bỏ cấp này."
+                break
+            fi
+        done
+    fi
+
+    # mv cùng filesystem nên tức thì, không copy lại 27GB.
+    for entry in "$inner"/* "$inner"/.[!.]*; do
+        [ -e "$entry" ] || continue
+        name=$(basename "$entry")
+        rm -rf "$DIR/$name"
+        mv "$entry" "$DIR/$name"
+    done
+    rm -rf "$src"
+}
 
 [ -n "${QIE_MODELS_URI:-}" ] || die "chưa đặt QIE_MODELS_URI (gs://bucket/...)"
 URI="$QIE_MODELS_URI"
@@ -40,13 +95,10 @@ mkdir -p "$DIR"
 
 # --- Đã có sẵn thì thôi -----------------------------------------------------
 # Container này chạy lại mỗi lần `docker compose up`. Không có bước này thì
-# mỗi lần restart service là một lần tải 20GB.
+# mỗi lần restart service là một lần tải hàng chục GB.
 if [ "${QIE_MODELS_FORCE:-false}" != "true" ] &&
    [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$URI" ]; then
-    missing=""
-    for path in $REQUIRE; do
-        [ -e "$DIR/$path" ] || missing="$missing $path"
-    done
+    missing=$(_missing)
     if [ -z "$missing" ]; then
         log "Model đã có sẵn từ $URI — bỏ qua. (QIE_MODELS_FORCE=true để tải lại)"
         exit 0
@@ -55,31 +107,35 @@ if [ "${QIE_MODELS_FORCE:-false}" != "true" ] &&
 fi
 
 # --- Xác thực ---------------------------------------------------------------
-if [ -f "$KEY" ]; then
+KEY=$(_find_key)
+if [ -n "$KEY" ]; then
     log "Xác thực bằng key service account: $KEY"
     gcloud auth activate-service-account --key-file="$KEY" --quiet
 else
     # Trên GCE, service account gắn với VM là cách đúng: không có file key nào
     # để rò rỉ, xoay vòng credential do Google lo, thu hồi bằng một lệnh IAM.
-    log "Không thấy $KEY — dùng ADC (service account gắn với VM)."
+    log "Không thấy file key — dùng ADC (service account gắn với VM)."
 fi
 
 log "Nguồn : $URI"
 log "Đích  : $DIR"
 
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+
 # --- Tải --------------------------------------------------------------------
 case "$URI" in
     *.tar.zst|*.tzst)
         log "Stream tar.zst (không cần chỗ chứa archive)"
-        gcloud storage cat "$URI" | zstd -d -T0 | tar -x -C "$DIR"
+        gcloud storage cat "$URI" | zstd -d -T0 | tar -x -C "$STAGE"
         ;;
     *.tar.gz|*.tgz)
         log "Stream tar.gz"
-        gcloud storage cat "$URI" | tar -xz -C "$DIR"
+        gcloud storage cat "$URI" | tar -xz -C "$STAGE"
         ;;
     *.tar)
         log "Stream tar"
-        gcloud storage cat "$URI" | tar -x -C "$DIR"
+        gcloud storage cat "$URI" | tar -x -C "$STAGE"
         ;;
     *.zip)
         # Zip không stream được, nên phải kiểm tra đĩa TRƯỚC: hết chỗ giữa
@@ -97,26 +153,26 @@ case "$URI" in
         rm -f "$tmp"
         gcloud storage cp "$URI" "$tmp"
         log "Giải nén..."
-        unzip -q -o "$tmp" -d "$DIR"
+        unzip -q -o "$tmp" -d "$STAGE"
         rm -f "$tmp"
         ;;
     *)
         log "Đồng bộ thư mục (rsync, tải song song và tiếp tục được)"
+        rm -rf "$STAGE"
         gcloud storage rsync -r "$URI" "$DIR"
         ;;
 esac
 
+[ -d "$STAGE" ] && _flatten_into "$STAGE"
+
 # --- Kiểm tra ---------------------------------------------------------------
-# Tải xong không có nghĩa là đúng cây thư mục: zip đóng sai gốc sẽ cho
+# Tải xong không có nghĩa là đúng cây thư mục: archive đóng sai gốc sẽ cho
 # /models/models/Qwen-... và app chỉ báo lỗi sau 2 phút nạp model.
-missing=""
-for path in $REQUIRE; do
-    [ -e "$DIR/$path" ] || missing="$missing $path"
-done
+missing=$(_missing)
 if [ -n "$missing" ]; then
     log "Cây thư mục thực tế ở $DIR:"
     ls -la "$DIR" >&2 || true
-    die "thiếu:$missing — kiểm tra archive có đóng từ BÊN TRONG models/ không."
+    die "thiếu:$missing — kiểm tra archive có chứa Qwen-Image-Edit-2509/ và lightning-251115/ không."
 fi
 
 printf '%s' "$URI" > "$MARKER"

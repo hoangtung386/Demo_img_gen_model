@@ -14,13 +14,21 @@ services:
     image: qwen-lightning-fetch:0.1.0
     container_name: qwen-lightning-fetch
     environment:
-      QIE_MODELS_URI: "${QIE_MODELS_URI:?dat QIE_MODELS_URI=gs://bucket/path/models.tar.zst trong .env}"
+      # Mặc định ghim sẵn nên KHÔNG cần .env: clone repo, thả
+      # ai-asset-amb.json vào gốc, `docker compose up` là chạy. Đặt biến
+      # QIE_MODELS_URI trong môi trường để trỏ sang archive khác.
+      QIE_MODELS_URI: "${QIE_MODELS_URI:-gs://ai-model-new-amb/models.zip}"
       QIE_MODELS_DIR: /models
       QIE_GCS_KEY_FILE: "${QIE_GCS_KEY_FILE:-/secrets/gcs-key.json}"
       QIE_MODELS_FORCE: "${QIE_MODELS_FORCE:-false}"
     volumes:
       # rw: đây là service DUY NHẤT được ghi vào models/.
       - ./models:/models
+      # Gốc repo, read-only: fetch_models.sh dò key service account ở đây
+      # (ai-asset-amb.json). Mount cả thư mục chứ không trỏ thẳng vào file —
+      # bind mount vào một file không tồn tại thì Docker lặng lẽ tạo ra một
+      # THƯ MỤC cùng tên và lỗi hiện ra ở chỗ khó hiểu.
+      - .:/project:ro
       # Mount cả THƯ MỤC chứ không phải file key: thư mục thì Docker tạo được
       # nếu chưa có, còn trỏ bind mount vào một file không tồn tại thì Docker
       # lặng lẽ tạo ra một thư mục cùng tên và script đọc key thành lỗi khó
@@ -52,9 +60,12 @@ services:
       model-fetcher:
         condition: service_completed_successfully
 
-    # HF_TOKEN và các QIE_* lấy từ .env của project.
+    # .env là TUỲ CHỌN: bản deploy trên GCE không cần file nào cả — trọng số
+    # do model-fetcher kéo từ GCS, HF_TOKEN không dùng tới. Có .env thì nó
+    # vẫn được nạp để ghi đè khi cần chạy tay.
     env_file:
-      - .env
+      - path: .env
+        required: false
 
     # Ghi đè lên env_file cho những giá trị chỉ đúng bên trong container.
     environment:

@@ -106,19 +106,79 @@ Kiểm tra cây model bất cứ lúc nào (không cần GPU):
 make preflight
 ```
 
-## Trọng số từ Google Cloud Storage (thay cho HuggingFace)
+## Triển khai trên Google Cloud (trọng số từ GCS)
 
-Trên production, `docker compose` kéo trọng số từ GCS thay vì Hub: không cần
-`HF_TOKEN`, không cần accept license lúc deploy, không phụ thuộc Hub còn sống.
-
-### 1. Đóng gói và đẩy lên (chạy một lần, trên máy đã có `models/`)
+Đây là đường deploy chính: clone repo, thả file key, chạy một lệnh. **Không
+cần `.env`, không cần `HF_TOKEN`, không chạm tới HuggingFace.**
 
 ```bash
-make pack DEST=gs://<bucket>/qwen/
+git clone https://github.com/hoangtung386/Test_Nunchaku_img_gen_model.git
+cd Test_Nunchaku_img_gen_model
+cp /duong/dan/toi/ai-asset-amb.json .      # key service account GCS
+docker compose up -d --build
 ```
 
-Script dựng `models.tar.zst` rồi upload. **Đừng dùng `.zip`** — số đo trên
-chính trọng số của repo này, mẫu 500MB lấy từ giữa file transformer INT4:
+Thế thôi. `docker compose up` chạy hai service theo thứ tự:
+
+1. **`model-fetcher`** — xác thực bằng `ai-asset-amb.json`, tải
+   `gs://ai-model-new-amb/models.zip` (21.5 GB) về rồi giải nén vào
+   `./models/`, tự kiểm tra cây thư mục, xong thì thoát.
+2. **`qwen-lightning`** — chỉ khởi động khi bước trên trả về 0
+   (`depends_on: service_completed_successfully`).
+
+Lần chạy sau, fetcher thấy `models/.fetched-from` khớp URI và còn đủ file thì
+bỏ qua, không tải lại. Ép tải lại: `QIE_MODELS_FORCE=true docker compose up`.
+
+### Build cài những gì
+
+`Dockerfile` dùng **Python 3.13 + uv**, tương đương hai lệnh chạy tay:
+
+```bash
+uv sync
+uv pip install https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp313-cp313-linux_x86_64.whl
+```
+
+`uv sync --frozen` một mình đã cài đủ **kể cả nunchaku**, vì `pyproject.toml`
+khai báo nunchaku như dependency thật và `[tool.uv.sources]` ghim URL wheel
+`cp313` khớp đúng Python của image. Lệnh `uv pip install` giữ lại để ghim rõ
+tổ hợp ngay trong Dockerfile.
+
+**Thứ tự hai lệnh là bắt buộc.** nunchaku khai báo `diffusers` *không ghim
+phiên bản*; chạy `uv pip install` trước `uv sync` thì uv kéo diffusers mới
+nhất (>=0.37), nơi chữ ký `QwenEmbedRope.forward()` đã đổi và transformer
+nunchaku gọi sai. Build có bước chốt phiên bản đọc metadata (không import, vì
+builder không có GPU) nên sai là fail ngay lúc build:
+
+```
+OK — diffusers 0.36.0, torch 2.9.0, nunchaku 1.2.1+cu12.8torch2.9
+```
+
+### Xác thực GCS
+
+`scripts/fetch_models.sh` dò key theo thứ tự: `$QIE_GCS_KEY_FILE` →
+`/secrets/gcs-key.json` → **`ai-asset-amb.json` ở gốc repo** → bất kỳ
+`ai-asset*.json` nào. Gốc repo được mount `:ro` vào `/project` trong container
+fetcher; key **không** đi vào image app và không nằm trong build context
+(`.dockerignore` chặn `ai-asset*.json` và `secrets/`).
+
+Không có file key nào thì script rơi về ADC — **cách nên dùng trên GCE**: gắn
+service account vào VM, không có file key nào để rò rỉ, thu hồi bằng một lệnh
+IAM. Quyền tối thiểu: `roles/storage.objectViewer` trên bucket.
+
+### Đổi archive
+
+Mặc định đã ghim trong `docker-compose.yml`, không cần đặt biến nào:
+
+```yaml
+QIE_MODELS_URI: "${QIE_MODELS_URI:-gs://ai-model-new-amb/models.zip}"
+```
+
+`fetch_models.sh` nhận `.zip`, `.tar.zst`, `.tar.gz`, `.tar`, hoặc một prefix
+thư mục. Archive bọc trong một cấp `models/` — như `zip -r models.zip models/`
+tạo ra — được nhận diện và bỏ cấp đó tự động, nên không ra `models/models/...`.
+
+**Nếu đóng gói lại thì nên dùng `.tar.zst`** — số đo trên chính trọng số của
+repo này, mẫu 500MB lấy từ giữa file transformer INT4:
 
 | | Thời gian | Tiết kiệm |
 | :--- | ---: | ---: |
@@ -128,48 +188,16 @@ chính trọng số của repo này, mẫu 500MB lấy từ giữa file transfor
 
 zstd nhanh hơn 60 lần **và** nén tốt hơn. Nhưng lý do quan trọng hơn là
 **tar stream được, zip thì không**: central directory của zip nằm ở cuối
-file, nên phía nhận buộc phải tải trọn archive xuống đĩa rồi mới giải nén —
-27GB archive + 27GB bản giải nén = **54GB đĩa trống** phải có. Với
-`.tar.zst`, `gcloud storage cat | zstd -d | tar -x` chỉ cần 27GB. Một lần
-tải dở dang cũng không để lại archive cụt.
-
-`scripts/fetch_models.sh` vẫn nhận `.zip`, `.tar.gz`, `.tar`, hoặc một prefix
-thư mục (khi đó dùng `gcloud storage rsync -r`, tải song song và chạy lại là
-tiếp tục chứ không làm lại từ đầu).
-
-### 2. Cấu hình phía server
+file, nên VM buộc phải tải trọn 21.5 GB xuống đĩa rồi mới giải nén thêm
+26.4 GB nữa — tức **~48 GB đĩa trống** phải có. Với `.tar.zst`,
+`gcloud storage cat | zstd -d | tar -x` chỉ cần 27 GB, và một lần tải dở dang
+cũng không để lại archive cụt.
 
 ```bash
-# .env
-QIE_MODELS_URI=gs://<bucket>/qwen/models.tar.zst
+make pack DEST=gs://ai-model-new-amb/      # -> models.tar.zst rồi upload
 ```
 
-Xác thực, theo thứ tự ưu tiên:
-
-1. **VM trên GCE đã gắn service account** — không cần làm gì, script dùng ADC.
-   Đây là cách nên dùng: không có file key nào để rò rỉ, Google lo xoay vòng
-   credential, thu hồi bằng một lệnh IAM.
-2. **Key service account** — đặt file vào `secrets/gcs-key.json` (xem
-   [`secrets/README.md`](secrets/README.md)). Quyền tối thiểu:
-   `roles/storage.objectViewer` trên đúng bucket đó.
-
-Key **chỉ** được mount vào container `model-fetcher`, không đi vào image app
-và không nằm trong build context (`.dockerignore` chặn `secrets/` và
-`ai-asset*.json`).
-
-### 3. Chạy
-
-```bash
-make run
-```
-
-`model-fetcher` chạy trước, kéo và giải nén vào `./models`, tự kiểm tra cây
-thư mục rồi thoát. App chỉ khởi động khi bước đó trả về 0
-(`depends_on: service_completed_successfully`) — archive đóng sai gốc sẽ bị
-chặn ngay thay vì đổ traceback sau 2 phút nạp model.
-
-Lần chạy sau, fetcher thấy `models/.fetched-from` khớp URI và còn đủ file thì
-bỏ qua. Ép tải lại: `QIE_MODELS_FORCE=true`. Xem riêng log tải:
+Xem riêng log tải mà không lẫn log nạp model:
 
 ```bash
 make fetch
