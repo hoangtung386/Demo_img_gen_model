@@ -63,7 +63,6 @@ Các biến quan trọng trong `.env` (đọc bởi cả `download` và `serve`)
 | `QIE_WARMUP` | `true` | Chạy một lượt sinh ảnh giả lúc khởi động để người dùng đầu tiên không phải chờ |
 | `QIE_PORT` | `7860` | Cổng Gradio |
 | `QIE_SERVER_NAME` | `0.0.0.0` | Bind address (để chạy trên server) |
-| `QIE_SHARE` | `true` | Tạo link Gradio share công khai `*.gradio.live`. Mặc định bật vì Colab / máy thuê không mở được cổng 7860 ra ngoài; `docker-compose.yml` tắt tường minh |
 | `QIE_DEMO_CACHE` | `true` | Ví dụ mẫu trả ảnh dựng sẵn thay vì chạy model (xem bên dưới) |
 | `QIE_DOWNLOAD_BASE_TRANSFORMER` | `false` | Tải cả 5 shard transformer BF16 (~39GB) mà pipeline không dùng tới |
 
@@ -235,8 +234,9 @@ trả kết quả — thuần tính toán trên GPU. Nó **không** bao gồm:
 
 Nên nếu bấm đồng hồ thấy 15s mà ô trạng thái ghi `GPU 6.3s` thì model vẫn chạy
 đúng 6.3s; ~9s còn lại là mạng. Muốn loại hẳn yếu tố này khi đo: đặt
-`QIE_SHARE=false` và truy cập trực tiếp qua LAN hoặc SSH port-forward, hoặc đo
-bằng `make benchmark` (chạy thẳng trong container, không qua HTTP).
+truy cập trực tiếp qua LAN hoặc SSH port-forward thay vì qua link
+`*.gradio.live`, hoặc đo bằng `make benchmark` (chạy thẳng trong container,
+không qua HTTP).
 
 #### Trên một card A100 40GB
 
@@ -269,9 +269,9 @@ uv run run-app   # phục vụ tại 0.0.0.0:7860
 
 ### Lấy link public để chia sẻ
 
-Mặc định đã bật, nên không cần làm gì nếu server không có IP public — chỉ khi
-chạy qua `docker compose` mới phải đổi `QIE_SHARE` thành `true` trong
-`docker-compose.yml`. Khi khởi động, Gradio dựng tunnel và in ra hai dòng:
+Không cần cấu hình gì: app **luôn** dựng tunnel và in ra hai dòng khi khởi
+động. Không dựng được thì nó dừng hẳn kèm `RuntimeError` (sau 3 lần thử)
+thay vì phục vụ im lặng ở một cổng không ai với tới được.
 
 ```
 * Running on local URL:  http://0.0.0.0:7860
@@ -502,8 +502,9 @@ gcloud compute firewall-rules create allow-qwen-7860 \
 Đừng dùng `--source-ranges=0.0.0.0/0`: Gradio không có xác thực, ai biết IP là vào
 được và chạy model bằng tiền GPU của bạn.
 
-`QIE_SHARE=true` tạo link `*.gradio.live` cũng là đường công khai không xác thực —
-trên server trả tiền theo giờ thì nên để `false` và dùng SSH tunnel.
+Lưu ý link `*.gradio.live` mà app luôn tạo **cũng** là một đường công khai
+không xác thực, và không tắt được bằng cấu hình. Trên server trả tiền theo
+giờ, đừng để demo chạy khi không dùng — xem [Dọn dẹp](#dọn-dẹp-sau-khi-test).
 
 ### 6. Xong việc
 
@@ -574,15 +575,18 @@ ping 192.168.5.233
 Nếu `ss` cho thấy `127.0.0.1:7860` thay vì `0.0.0.0:7860` thì `QIE_SERVER_NAME`
 đang sai — `docker-compose.yml` đã ép `0.0.0.0`, chỉ xảy ra khi chạy ngoài Docker.
 
-### Chỉ test nội bộ thì nên tắt link public
+### Link public luôn bật — không tắt được
 
-`QIE_SHARE` mặc định là `true`, tức mỗi lần khởi động lại tạo một link
-`*.gradio.live` mở ra Internet. Test trong mạng công ty thì không cần:
+Mỗi lần khởi động app tạo một link `*.gradio.live` mở ra Internet, và không
+có biến môi trường nào tắt được. Đây là lựa chọn có chủ ý: đường chạy chính
+của repo là Colab / máy thuê, nơi cổng 7860 không tiếp cận được từ ngoài nên
+thiếu link đồng nghĩa demo không dùng được.
 
-```bash
-# .env
-QIE_SHARE=false
-```
+Đổi lại, **mọi lần chạy đều mở một endpoint không xác thực ra Internet**, kể
+cả khi bạn chỉ định test trong LAN. Test nội bộ xong thì dừng demo ngay
+(xem [Dọn dẹp](#dọn-dẹp-sau-khi-test)) chứ đừng để chạy nền. Cần chạy dài
+ngày mà không muốn link thì sửa thẳng `_launch_with_public_link()` trong
+`src/qwen_lightning/ui/app.py`.
 
 ### Lưu ý khi test tải
 
@@ -621,7 +625,7 @@ bash cleanup.sh
   giữ, script chỉ cảnh báo chứ không kill.
 - Tìm PID đang chiếm cổng (dùng `fuser` hoặc `lsof`) và gửi `SIGTERM`, nếu không
   phản hồi sau 2s thì `SIGKILL`.
-- Dọn tiến trình tunnel `frpc` (sinh ra khi `QIE_SHARE=true`) **chỉ của đúng cổng
+- Dọn tiến trình tunnel `frpc` (app luôn tạo) **chỉ của đúng cổng
   đó** — máy có thể đang chạy demo Gradio khác, không đụng tới tunnel của họ.
 - In trạng thái VRAM hiện tại (`nvidia-smi`) nếu có.
 

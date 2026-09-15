@@ -25,7 +25,6 @@ def base_settings() -> Settings:
         offload="auto",
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
         demo_cache=True,
         device_override=None,
         text_encoder_device=None,
