@@ -97,6 +97,10 @@ COPY --from=builder /opt/venv /opt/venv
 # HF_HUB_OFFLINE=1 để mọi đường rò xuống Hub thành lỗi dừng hẳn thay vì một
 # lần tải 65GB im lặng. Trọng số do model-fetcher kéo từ GCS về /app/models
 # nên container này KHÔNG cần mạng tới HuggingFace và KHÔNG cần HF_TOKEN.
+# Build sẽ cảnh báo SecretsUsedInArgOrEnv cho HF_TOKEN bên dưới. Đó là báo
+# nhầm và ĐỪNG gỡ dòng đó ra: nó đặt token thành RỖNG chứ không nhét bí mật
+# vào image — chốt chặn để một HF_TOKEN lỡ có trong môi trường host không đi
+# vào tiến trình phục vụ. Chốt thật sự là HF_HUB_OFFLINE=1 ngay dưới.
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
