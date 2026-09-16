@@ -129,6 +129,36 @@ Thế thôi. `docker compose up` chạy hai service theo thứ tự:
 Lần chạy sau, fetcher thấy `models/.fetched-from` khớp URI và còn đủ file thì
 bỏ qua, không tải lại. Ép tải lại: `QIE_MODELS_FORCE=true docker compose up`.
 
+> **Đến đây là xong — không phải chạy thêm lệnh nào.** `CMD` của image chính
+> là `python scripts/serve.py`, và compose không ghi đè nó. Mục
+> [Chạy trực tiếp](#chạy-trực-tiếp-không-docker) bên dưới là đường **thay
+> thế** cho ai chạy không qua Docker (Colab, máy thuê), không phải bước tiếp
+> theo của mục này.
+
+### Vòng đời container
+
+```bash
+docker compose logs -f              # theo dõi tải model + warm-up (~2-3 phút)
+docker compose ps                   # xem trạng thái
+docker compose restart qwen-lightning   # khởi động lại app, không tải lại model
+docker compose down                 # dừng và xoá container
+```
+
+Dùng `docker compose down` chứ không phải `docker stop`: `docker stop` chỉ
+dừng container app và để nó nằm lại ở trạng thái exited, lần sau `up` sẽ báo
+xung đột tên. `down` dọn cả app lẫn container fetcher đã thoát.
+
+Thư mục `./models` **không** bị `down` đụng tới — nó là bind mount trên host,
+nên lần `up` sau không phải tải lại 21.5 GB.
+
+Không có `docker run` một dòng cho service này, vì nó là **hai** container
+chạy có thứ tự: fetcher phải xong trước, app mới được khởi động
+(`depends_on: service_completed_successfully`). Muốn viết tay bằng `docker
+run` thì phải tự chạy hai lệnh đúng thứ tự và tự truyền lại `--gpus all`,
+ánh xạ cổng, ba volume mount và khoảng mười biến môi trường mà
+`docker-compose.yml` đang giữ. Compose tồn tại chính là để khỏi phải làm việc
+đó.
+
 ### Build cài những gì
 
 `Dockerfile` dùng **Python 3.13 + uv**, tương đương hai lệnh chạy tay:
@@ -203,14 +233,23 @@ Xem riêng log tải mà không lẫn log nạp model:
 make fetch
 ```
 
-## Chạy demo
+## Chạy trực tiếp (không Docker)
+
+Đường này dành cho Colab, máy thuê, hoặc khi đang sửa code — **bỏ qua nếu bạn
+dùng `docker compose`**, vì compose đã chạy sẵn đúng lệnh dưới đây bên trong
+container.
 
 ```bash
 python scripts/serve.py
 # hoặc: uv run run-app
 ```
 
-Mở trình duyệt tại `http://<server-ip>:7860`. Giao diện có **7 tab**. Năm tab đầu đã
+Cần `uv sync` và trọng số nằm sẵn trong `./models` trước (xem
+[Cài đặt](#cài-đặt) và [Tải trọng số](#tải-trọng-số)).
+
+## Giao diện (7 tab)
+
+Mở trình duyệt tại `http://<server-ip>:7860`. Năm tab đầu đã
 có prompt chuyên biệt viết sẵn (xem `src/qwen_lightning/ui/prompts.py`):
 
 | Tab | Đầu vào | Kết quả |
@@ -448,17 +487,22 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
 Lệnh trên phải in ra bảng GPU. Nếu không, toolkit chưa được đăng ký với Docker
 và `make run` sẽ thất bại ở bước cấp GPU.
 
-Trọng số **không** nằm trong image — tải ở host rồi mount vào, nên phải chạy
-`make download` trước ít nhất một lần.
+Trọng số **không** nằm trong image — chúng được mount từ `./models` trên host.
+Có hai cách đưa chúng vào đó:
+
+- **Từ GCS (mặc định, khuyên dùng).** Không cần làm gì cả: service
+  `model-fetcher` tự kéo về ở lần `up` đầu tiên. Xem
+  [Triển khai trên Google Cloud](#triển-khai-trên-google-cloud-trọng-số-từ-gcs).
+- **Từ HuggingFace.** Chạy `make download` ở host trước ít nhất một lần. Cách
+  này cần `HF_TOKEN` trong `.env` và đã accept license của model.
 
 ```bash
-make download        # tải trọng số về ./models (~27GB)
-make preflight       # kiểm tra cây model trên đĩa, không cần GPU
-make build           # dựng image (~10GB, lần đầu mất vài phút)
-make run             # khởi động container
+make build           # dựng image (~12.7GB, lần đầu mất ~8 phút)
+make run             # kéo trọng số (lần đầu) rồi khởi động container
 make logs            # theo dõi load model + warm-up
+make preflight       # kiểm tra cây model trên đĩa, không cần GPU
 make benchmark       # đo tốc độ sinh ảnh thật
-make stop            # dừng
+make stop            # dừng và xoá container
 ```
 
 Cổng 7860 đang bận thì đổi: `make run HOST_PORT=7861`.
