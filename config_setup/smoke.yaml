@@ -1,0 +1,80 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  CONFIG SMOKE TEST — chứng minh đường queue chạy thông, KHÔNG sinh    ║
+# ║  ảnh thật. File này KHÔNG có secret nên được commit.                  ║
+# ╠══════════════════════════════════════════════════════════════════════╣
+# ║  Khác base.yaml đúng 2 chỗ:                                          ║
+# ║    processor.type: echo   → không nạp model, không cần GPU/weight     ║
+# ║    storage.backend: local → không cần key GCS                        ║
+# ║  Phần rabbitmq để trống, nạp từ IMG_RMQ_* lúc chạy (xem loader.py).   ║
+# ║                                                                      ║
+# ║  Dùng để làm gì: kiểm tra TRƯỚC khi thuê GPU rằng container thật sự  ║
+# ║  consume 4 inbound queue và đẩy reply sang queue_out. Nếu smoke pass  ║
+# ║  mà bản thật im lặng thì lỗi nằm ở model/GPU, không phải ở queue.     ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+service_version: "v0.1.0-smoke"
+
+rabbitmq:
+  # Điền qua env: IMG_RMQ_HOST / IMG_RMQ_PORT / IMG_RMQ_USER /
+  # IMG_RMQ_PASSWORD / IMG_RMQ_VHOST. Để trống ở đây để file không bao giờ
+  # mang secret.
+  host: ""
+  port: 5672
+  user: ""
+  password: ""
+  vhost: ""
+  exchange: "predict-ai-gen-image"
+  queues_in:
+    premium: "gen-image-queue-in-premium"
+    basic_1: "gen-image-queue-in-basic-tier-1"
+    basic_2: "gen-image-queue-in-basic-tier-2"
+    basic_3: "gen-image-queue-in-basic-tier-3"
+  queue_out: "gen-image-queue-out"
+  queue_out_key: "gen-image-queue-out"
+  # Giống production: không đụng vào args của queue BE đã tạo sẵn.
+  topology_mode: "declare_minimal"
+  prefetch_count: 1
+  heartbeat: 600
+
+storage:
+  backend: "local"
+  default_index: 0
+  backends:
+    - credentials_path: ""          # local backend không dùng
+      bucket: ""
+      folder: "data/smoke_out"      # ảnh placeholder ghi vào đây
+      feature: "gen-image"
+      signed_url_ttl_minutes: 15
+      cdn_base_url: ""
+
+processor:
+  type: "echo"                      # ← không nạp model
+  num_steps: 50
+  # Ảnh placeholder không cần to; echo tự cắp về tối đa 512px.
+  width: 2048
+  height: 2048
+  warmup: false
+
+worker:
+  num_ai_workers: 1
+  in_queue_capacity: 2
+  publish_queue_capacity: 5000
+  basic_tier_weights: [5, 3, 2]
+  recent_requests_capacity: 1000
+
+observability:
+  log_level: "INFO"
+  log_payload_max_bytes: 500
+  strip_url_query: true
+
+audit:
+  service_name: "model_gen_img_smoke"
+  root_dir: "data_predict"
+  staging_dir: "data/staging"
+  retention_days: 1
+  cleanup_interval_hours: 6
+  enabled: true
+  # Smoke test không cần giữ ảnh — chỉ cần chứng minh reply ra queue_out.
+  save_input_image: false
+  save_output_image: false
+  compute_checksum: false

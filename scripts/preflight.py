@@ -1,16 +1,20 @@
-"""Kiểm tra cây model trên đĩa TRƯỚC khi load pipeline.
+"""Kiểm tra model trên đĩa TRƯỚC khi nạp.
 
 Chỉ dùng stdlib — không cần torch, không cần GPU, không chạm mạng. Mục đích
-là bắt lỗi thiếu file / sai mount trong vài giây thay vì sau 2 phút load model
-rồi đổ traceback giữa chừng.
+là bắt lỗi thiếu file / sai mount trong vài giây thay vì sau hàng chục giây
+nạp model rồi đổ traceback giữa chừng.
 
     python scripts/preflight.py
 
 Trong container:
 
-    docker compose run --rm --entrypoint python qwen-lightning \
-        scripts/preflight.py
+    docker compose run --rm --entrypoint python imagegen scripts/preflight.py
+
+Cây model đã đổi hẳn so với bản Qwen: giờ là một repo transformers PHẲNG
+(config.json + 3 shard + tokenizer ở cấp gốc), không còn model_index.json và
+các thư mục con vae/ text_encoder/ transformer/.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,11 +24,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from qwen_lightning.config import load_settings  # noqa: E402
+from imagegen.config import load_settings  # noqa: E402
 
-# Component được thay bằng bản Nunchaku INT4 nên thư mục BF16 gốc (~39GB)
-# không bao giờ được diffusers đọc. Xem ghi chú trong download.py.
-SKIPPED = {"transformer"}
+# artifacts là module THUẦN STDLIB — import nó không kéo theo torch,
+# transformers hay sdnq. Đó là điều kiện để script này giữ đúng lời hứa
+# ở docstring: chạy được trong vài giây trên máy không GPU.
+from imagegen.hidream.artifacts import (  # noqa: E402
+    ARCHITECTURE,
+    EXPECTED_WEIGHT_GB,
+    QUANT_METHOD,
+    REQUIRED_FILES,
+    WEIGHT_SIZE_TOLERANCE,
+)
 
 _GB = 1024**3
 
@@ -37,44 +48,64 @@ def _ok(msg: str) -> None:
     print(f"  ✓ {msg}")
 
 
-def _shard_names(component: Path) -> set[str] | None:
-    """Tên các shard khai báo trong *.index.json, nếu component bị chia nhỏ."""
-    for index in component.glob("*.index.json"):
-        weight_map = json.loads(index.read_text(encoding="utf-8")).get(
-            "weight_map", {}
-        )
-        return set(weight_map.values())
-    return None
-
-
-def check_component(base: Path, name: str) -> tuple[bool, int]:
-    """Trả về (đạt, tổng byte) cho một component của pipeline."""
-    component = base / name
-    if not component.is_dir():
-        _fail(f"{name}/ — thiếu thư mục")
+def check_repo(root: Path) -> tuple[bool, int]:
+    """Kiểm tra một snapshot repo transformers. Trả ``(đạt, tổng byte)``."""
+    if not root.is_dir():
+        _fail(f"{root} — không phải thư mục")
         return False, 0
 
-    shards = _shard_names(component)
-    if shards is not None:
-        missing = [s for s in sorted(shards) if not (component / s).is_file()]
-        if missing:
-            _fail(f"{name}/ — thiếu {len(missing)} shard: {missing[:3]}")
-            return False, 0
-        total = sum((component / s).stat().st_size for s in shards)
-        _ok(f"{name}/ — {len(shards)} shard, {total / _GB:.1f} GB")
-        return True, total
-
-    weights = list(component.glob("*.safetensors"))
-    configs = list(component.glob("*.json")) + list(component.glob("*.jinja"))
-    if not weights and not configs:
-        _fail(f"{name}/ — rỗng")
+    missing = [f for f in REQUIRED_FILES if not (root / f).is_file()]
+    if missing:
+        _fail(f"thiếu file bắt buộc: {missing}")
         return False, 0
-    total = sum(f.stat().st_size for f in weights)
-    if weights:
-        _ok(f"{name}/ — {len(weights)} file weight, {total / _GB:.2f} GB")
-    else:
-        _ok(f"{name}/ — {len(configs)} file config")
+    _ok(f"{len(REQUIRED_FILES)} file config/tokenizer đầy đủ")
+
+    index_path = root / "model.safetensors.index.json"
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        shards = set(index["weight_map"].values())
+    except (OSError, ValueError, KeyError) as exc:
+        _fail(f"{index_path.name} hỏng hoặc thiếu weight_map: {exc}")
+        return False, 0
+
+    absent = sorted(s for s in shards if not (root / s).is_file())
+    if absent:
+        _fail(f"thiếu {len(absent)}/{len(shards)} shard: {absent[:3]}")
+        return False, 0
+
+    total = sum((root / s).stat().st_size for s in shards)
+    _ok(f"{len(shards)} shard, {total / _GB:.2f} GB")
     return True, total
+
+
+def check_quantization(root: Path) -> bool:
+    """Xác nhận config khai báo quantizer SDNQ.
+
+    Nạp nhầm một repo BF16 chưa lượng tử hoá vẫn chạy được nhưng tốn 17 GiB
+    VRAM thay vì 11 — im lặng cho tới lúc OOM trên card nhỏ.
+    """
+    try:
+        cfg = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _fail(f"config.json không đọc được: {exc}")
+        return False
+
+    method = (cfg.get("quantization_config") or {}).get("quant_method")
+    if method != QUANT_METHOD:
+        _fail(
+            f"quant_method={method!r}, mong đợi {QUANT_METHOD!r}. "
+            "Đây có phải bản đã "
+            "lượng tử hoá không?"
+        )
+        return False
+    _ok(f"quantization_config.quant_method = {QUANT_METHOD}")
+
+    arch = cfg.get("architectures") or []
+    if ARCHITECTURE not in arch:
+        _fail(f"architectures={arch}, mong đợi {ARCHITECTURE}")
+        return False
+    _ok(f"architectures = {arch[0]}")
+    return True
 
 
 def main() -> int:
@@ -92,55 +123,33 @@ def main() -> int:
             "tải ra ngoài project"
         )
 
-    ok = True
-    total = 0
+    print(f"\n[1] Model: {settings.model_path_local}")
+    if not settings.model_path_local:
+        _fail("IMG_MODEL_PATH chưa được set — sẽ tải từ Hub")
+        return 1
 
-    print(f"\n[1] Base pipeline: {settings.base_model_local}")
-    if not settings.base_model_local:
-        _fail("QIE_BASE_MODEL_LOCAL chưa được set — sẽ tải từ Hub")
-        ok = False
-    else:
-        base = Path(settings.base_model_local)
-        index = base / "model_index.json"
-        if not index.is_file():
-            _fail(f"thiếu {index}")
-            ok = False
-        else:
-            spec = json.loads(index.read_text(encoding="utf-8"))
-            components = [
-                k for k in spec if not k.startswith("_")
-            ]
-            for name in sorted(components):
-                if name in SKIPPED:
-                    print(f"  – {name}/ — bỏ qua (dùng bản Nunchaku INT4)")
-                    continue
-                passed, size = check_component(base, name)
-                ok = ok and passed
-                total += size
+    root = Path(settings.model_path_local)
+    files_ok, total = check_repo(root)
+    quant_ok = check_quantization(root) if files_ok else False
+    ok = files_ok and quant_ok
 
-    print(f"\n[2] Nunchaku transformer: {settings.transformer_path}")
-    if not settings.transformer_path:
-        _fail("QIE_TRANSFORMER_PATH chưa được set — sẽ tải từ Hub")
-        ok = False
-    else:
-        weights = Path(settings.transformer_path)
-        if not weights.is_file():
-            _fail(f"thiếu {weights}")
-            ok = False
-        else:
-            size = weights.stat().st_size
-            total += size
-            _ok(f"{weights.name} — {size / _GB:.1f} GB")
-            if settings.precision and settings.precision not in weights.name:
-                _fail(
-                    f"QIE_PRECISION={settings.precision} nhưng tên file là "
-                    f"{weights.name}"
-                )
-                ok = False
+    if files_ok:
+        gb = total / _GB
+        if (
+            abs(gb - EXPECTED_WEIGHT_GB) / EXPECTED_WEIGHT_GB
+            > WEIGHT_SIZE_TOLERANCE
+        ):
+            print(
+                f"  ! {gb:.2f} GB lệch nhiều so với mức mong đợi "
+                f"~{EXPECTED_WEIGHT_GB} GB — kiểm tra lại nguồn tải"
+            )
 
     print("\n" + "=" * 66)
-    print(f"Tổng weight sẽ nạp vào VRAM: {total / _GB:.1f} GB")
-    print(f"Chiến lược offload: {settings.offload}")
+    print(f"Tổng weight sẽ nạp vào VRAM: {total / _GB:.2f} GB")
+    print(f"Biến thể      : {settings.model_type}")
+    print(f"Số bước       : {settings.num_steps}")
+    print(f"guidance_scale: {settings.guidance_scale}")
+    print(f"Kích thước    : {settings.width}x{settings.height}")
     print("=" * 66)
     print("\n✅ PREFLIGHT ĐẠT" if ok else "\n❌ PREFLIGHT HỎNG")
     return 0 if ok else 1

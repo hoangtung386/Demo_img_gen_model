@@ -5,11 +5,12 @@
 # HF_TOKEN, không cần accept license lúc deploy, không cần .env.
 #
 # Biến môi trường:
-#   QIE_MODELS_URI      gs://bucket/path — BẮT BUỘC. Xem phần "Dạng URI".
-#   QIE_MODELS_DIR      thư mục đích (mặc định /models)
-#   QIE_GCS_KEY_FILE    key service account. Bỏ trống thì tự dò (xem _find_key)
-#   QIE_MODELS_REQUIRE  các đường dẫn tương đối phải tồn tại sau khi giải nén
-#   QIE_MODELS_FORCE    "true" => tải lại kể cả khi đã có sẵn
+#   IMG_MODELS_URI      gs://bucket/path — BẮT BUỘC. Xem phần "Dạng URI".
+#   IMG_MODELS_DIR      thư mục đích (mặc định /models)
+#   IMG_GCS_KEY_FILE    key download model (config_setup/credentials/
+#                       model-download-key.json). Bỏ trống thì tự dò (_find_key)
+#   IMG_MODELS_REQUIRE  các đường dẫn tương đối phải tồn tại sau khi giải nén
+#   IMG_MODELS_FORCE    "true" => tải lại kể cả khi đã có sẵn
 #
 # Dạng URI — quyết định cách tải:
 #   *.tar.zst  stream thẳng: cat | zstd -d | tar -x. KHÔNG có file archive
@@ -23,8 +24,16 @@
 #              song, dở dang thì chạy lại là tiếp tục chứ không làm lại từ đầu.
 set -eu
 
-DIR="${QIE_MODELS_DIR:-/models}"
-REQUIRE="${QIE_MODELS_REQUIRE:-Qwen-Image-Edit-2509/model_index.json lightning-251115}"
+# Nạp config từ config_setup/base.yaml (nguồn config duy nhất) NẾU có sẵn.
+# Trong container model-fetcher config đến từ docker-compose env (base.yaml
+# không mount vào đó) → guard này no-op, env thắng. Trên host thì đọc base.yaml.
+_SELF_DIR="$(cd "$(dirname "$0")" && pwd 2>/dev/null || echo .)"
+if command -v python3 >/dev/null 2>&1 && [ -f "$_SELF_DIR/config_env.py" ]; then
+    eval "$(python3 "$_SELF_DIR/config_env.py" 2>/dev/null || true)"
+fi
+
+DIR="${IMG_MODELS_DIR:-/models}"
+REQUIRE="${IMG_MODELS_REQUIRE:-HiDream-O1-Image-SDNQ-uint4/config.json HiDream-O1-Image-SDNQ-uint4/model.safetensors.index.json}"
 MARKER="$DIR/.fetched-from"
 STAGE="$DIR/.extract-tmp"
 
@@ -37,14 +46,15 @@ _first_require() { for r in $REQUIRE; do echo "$r"; return; done; }
 _find_key() {
     # Thứ tự: biến môi trường -> chỗ mount chuyên dụng -> gốc repo. Gốc repo
     # là chỗ người dùng thả file key sau khi clone, nên phải dò tới.
-    for c in "${QIE_GCS_KEY_FILE:-}" \
-             /secrets/gcs-key.json \
-             /secrets/ai-asset-amb.json \
-             /project/ai-asset-amb.json \
-             /project/secrets/gcs-key.json; do
+    # Key DOWNLOAD model nội bộ = config_setup/credentials/model-download-key.json
+    # (mount vào /credentials trong container). KHÁC key upload bucket user.
+    for c in "${IMG_GCS_KEY_FILE:-}" \
+             /credentials/model-download-key.json \
+             /project/config_setup/credentials/model-download-key.json \
+             /project/<key-file>.json; do
         if [ -n "$c" ] && [ -f "$c" ]; then echo "$c"; return; fi
     done
-    for c in /project/ai-asset*.json /project/*service-account*.json; do
+    for c in /project/<key-file>*.json /project/*service-account*.json; do
         if [ -f "$c" ]; then echo "$c"; return; fi
     done
 }
@@ -88,19 +98,19 @@ _flatten_into() {
     rm -rf "$src"
 }
 
-[ -n "${QIE_MODELS_URI:-}" ] || die "chưa đặt QIE_MODELS_URI (gs://bucket/...)"
-URI="$QIE_MODELS_URI"
+[ -n "${IMG_MODELS_URI:-}" ] || die "chưa đặt IMG_MODELS_URI (gs://bucket/...)"
+URI="$IMG_MODELS_URI"
 
 mkdir -p "$DIR"
 
 # --- Đã có sẵn thì thôi -----------------------------------------------------
 # Container này chạy lại mỗi lần `docker compose up`. Không có bước này thì
 # mỗi lần restart service là một lần tải hàng chục GB.
-if [ "${QIE_MODELS_FORCE:-false}" != "true" ] &&
+if [ "${IMG_MODELS_FORCE:-false}" != "true" ] &&
    [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$URI" ]; then
     missing=$(_missing)
     if [ -z "$missing" ]; then
-        log "Model đã có sẵn từ $URI — bỏ qua. (QIE_MODELS_FORCE=true để tải lại)"
+        log "Model đã có sẵn từ $URI — bỏ qua. (IMG_MODELS_FORCE=true để tải lại)"
         exit 0
     fi
     log "Marker khớp nhưng thiếu:$missing — tải lại."
@@ -144,7 +154,11 @@ case "$URI" in
         case "$size_b" in
             ''|*[!0-9]*) size_b=0 ;;
         esac
-        free_b=$(df -P "$DIR" | awk 'NR==2{print $4 * 1024}')
+        # printf "%.0f" chứ không phải print/‘%d’ trần: awk in số > 999999 ở
+        # dạng khoa học (7.1e+10) mà shell không hiểu trong $(( )), và %d trên
+        # awk tràn ở số nguyên 32-bit (2147483647) — cả hai đều gặp thật với
+        # ổ đĩa cỡ chục/trăm GB. %.0f là dạng duy nhất an toàn cho cả hai.
+        free_b=$(df -P "$DIR" | awk 'NR==2{printf "%.0f", $4 * 1024}')
         need_b=$(( size_b * 22 / 10 ))
         log "Zip: $((size_b / 1073741824))GiB nén, cần ~$((need_b / 1073741824))GiB trống (archive + bản giải nén), đang có $((free_b / 1073741824))GiB"
         [ "$size_b" -eq 0 ] || [ "$free_b" -gt "$need_b" ] ||
@@ -167,12 +181,12 @@ esac
 
 # --- Kiểm tra ---------------------------------------------------------------
 # Tải xong không có nghĩa là đúng cây thư mục: archive đóng sai gốc sẽ cho
-# /models/models/Qwen-... và app chỉ báo lỗi sau 2 phút nạp model.
+# /models/models/HiDream-... và app chỉ báo lỗi sau 2 phút nạp model.
 missing=$(_missing)
 if [ -n "$missing" ]; then
     log "Cây thư mục thực tế ở $DIR:"
     ls -la "$DIR" >&2 || true
-    die "thiếu:$missing — kiểm tra archive có chứa Qwen-Image-Edit-2509/ và lightning-251115/ không."
+    die "thiếu:$missing — kiểm tra archive có chứa HiDream-O1-Image-SDNQ-uint4/ không."
 fi
 
 printf '%s' "$URI" > "$MARKER"

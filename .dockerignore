@@ -1,18 +1,18 @@
-# Trọng số 65GB — mount volume lúc chạy, tuyệt đối không đưa vào build
+# Trọng số ~10GB — mount volume lúc chạy, tuyệt đối không đưa vào build
 # context (docker sẽ gửi toàn bộ context cho daemon trước khi build).
 models/
 
 # Đường dẫn tuyệt đối của HOST, vô nghĩa trong container. Compose set
-# QIE_BASE_MODEL_LOCAL / QIE_TRANSFORMER_PATH trỏ vào chỗ mount thay cho nó.
+# IMG_MODEL_PATH trỏ vào chỗ mount thay cho nó.
 .model_paths.env
 
 # Secret: HF_TOKEN được nạp lúc chạy qua env_file, không bake vào image.
 .env
 
-# Key service account GCS. Chỉ được mount vào container fetcher lúc chạy,
-# tuyệt đối không nằm trong build context: mọi thứ trong context đều được
-# gửi cho daemon và có thể lọt vào một layer.
-secrets/
+# Key service account GCS. Chỉ được mount vào container lúc chạy, tuyệt đối
+# không nằm trong build context: mọi thứ trong context đều được gửi cho daemon
+# và có thể lọt vào một layer. `*-key.json` phủ 2 key trong config_setup/
+# credentials/ (model-download-key.json, user-upload-key.json).
 ai-asset*.json
 *-key.json
 *service-account*.json
@@ -38,3 +38,17 @@ docs/
 tests/
 .claude/
 .claude-dev-helper/
+
+# Queue service: bake config_setup/ (chỉ base.example.yaml) NHƯNG không bake
+# secret — base.yaml + key thật inject qua volume mount lúc chạy (xem
+# docker-compose imagegen-queue).
+config_setup/base.yaml
+config_setup/credentials/*.json
+# Ảnh mẫu demo: mount lúc chạy qua docker-compose (service imagegen)
+# chứ không bake, nên không cần nằm trong build context.
+examples/
+
+# Audit store + staging là runtime artifact, không đưa vào image.
+data_predict/
+data/staging/
+data/smoke_out/

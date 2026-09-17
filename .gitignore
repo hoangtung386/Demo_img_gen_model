@@ -1,26 +1,95 @@
 # ============================================================
+# Repo này là PUBLIC. Mọi thứ lọt vào đây là công khai vĩnh viễn —
+# xoá commit sau đó KHÔNG gỡ được, phải rewrite history và coi như
+# mọi credential đã lộ là đã bị đọc.
+# ============================================================
+
+# ============================================================
 # Bí mật — KHÔNG BAO GIỜ commit
 # ============================================================
+# --- Biến môi trường ---
+# `.env.*` phủ .env.local/.env.prod…; `*.env` phủ prod.env/staging.env ở mọi
+# cấp; `.envrc` là của direnv, hay chứa `export AWS_…` nguyên văn.
 .env
 .env.*
-!config/example.env
+*.env
+.envrc
+
+# `.model_paths.env` do download.py sinh: đường dẫn tuyệt đối của máy local,
+# vô nghĩa với người khác và lộ cấu trúc thư mục máy bạn.
 .model_paths.env
+
+# --- Khoá riêng tư / chứng chỉ ---
 *.pem
 *.key
-service-account*.json
-gcp-credentials*.json
+*.ppk
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*.csr
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+.netrc
+.npmrc
+.pypirc
+.htpasswd
+
+# --- Service account / OAuth JSON ---
+# Nhiều pattern chồng nhau là CỐ Ý: một key GCS lọt vào repo public nghĩa là
+# phải thu hồi credential, không chỉ sửa git. Thà chặn thừa.
+#
+# Bài học cũ: pattern "ai-asset.json" KHÔNG khớp file thật "ai-asset-amb.json"
+# và suýt để lọt key. Dùng wildcard ở mọi biến thể tên.
+*-key.json
+*_key.json
+*credential*.json
+*credentials*.json
+*service-account*.json
+*service_account*.json
+client_secret*.json
+ai-asset*.json
+gcp-*.json
+secrets/
+config_setup/credentials/*.json
+!config_setup/credentials/.gitkeep
+!config_setup/credentials/README.md
+
+# --- Config runtime chứa secret ---
+# base.yaml có broker host/user/password/vhost + tên bucket. Chỉ commit
+# base.example.yaml làm mẫu.
+config_setup/base.yaml
+# Compose tự nạp file này nếu có; nó là chỗ người ta hay nhét path/secret
+# riêng của máy mình.
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# --- Hạ tầng / cloud CLI ---
+.aws/
+.gcloud/
+.azure/
+.kube/
+.terraform/
+*.tfvars
+*.tfstate
+*.tfstate.*
 
 # ============================================================
-# Trọng số model (~27GB) và mọi thứ HuggingFace tải về
+# Trọng số model (~10GB) và mọi thứ HuggingFace tải về
 # ============================================================
 # Dấu "/" đầu là BẮT BUỘC: "models/" không có nó sẽ khớp thư mục tên models ở
-# MỌI cấp, nuốt luôn src/qwen_lightning/models/ (loader.py, offload.py) và
-# repo clone về sẽ thiếu code.
+# MỌI cấp. (Lịch sử: từng nuốt luôn src/.../models/ và repo clone về thiếu
+# code. Thư mục đó nay đã đổi tên thành hidream/, nhưng giữ "/" vẫn đúng.)
 /models/
 
-# Lưới an toàn: chặn file trọng số ở BẤT KỲ đâu, kể cả khi ai đó
-# để nhầm ngoài models/. Một file .safetensors lọt vào lịch sử git
-# là phải rewrite history mới gỡ ra được.
+# Lưới an toàn: chặn file trọng số ở BẤT KỲ đâu, kể cả khi ai đó để nhầm
+# ngoài models/. Một file .safetensors lọt vào lịch sử git là phải rewrite
+# history mới gỡ ra được — và GitHub chặn file > 100MB nên push sẽ fail.
 *.safetensors
 *.ckpt
 *.pt
@@ -34,6 +103,45 @@ gcp-credentials*.json
 # Cache HuggingFace nếu ai đó trỏ HF_HOME ra ngoài models/
 .hf/
 .cache/
+
+# Archive trọng số dựng bằng scripts/pack_models.sh (hàng chục GB).
+models.zip
+models.tar
+models.tar.*
+*.tar.zst
+
+# ============================================================
+# Dữ liệu chạy thật — RỦI RO RIÊNG TƯ
+# ============================================================
+# Ảnh người dùng gửi lên + ảnh model sinh ra + payload RabbitMQ đầy đủ
+# (firebase_token, device_id, appid). Đây là PII, tuyệt đối không lên repo
+# public. Chặn CẢ thư mục `data/` chứ không chỉ 3 thư mục con đã biết: thêm
+# một backend lưu trữ mới là lại có chỗ rò.
+data/
+data_predict/
+
+# ============================================================
+# Ảnh mẫu demo — mặc định KHÔNG commit (repo public)
+# ============================================================
+# Các case thử đồ / ghép người / hoán đổi khuôn mặt dùng ẢNH NGƯỜI THẬT.
+# "Có quyền dùng cho demo nội bộ" KHÁC "phát hành công khai trên GitHub", nên
+# mặc định ở đây là chặn. Thiếu ảnh thì demo vẫn chạy: ui/components.py trả
+# None và khối ví dụ chỉ trống.
+#
+# Muốn commit một bộ ảnh ĐÃ RÕ GIẤY PHÉP (ảnh tự chụp, CC0, stock đã mua cho
+# mục đích phát hành) thì thêm tay:
+#     git add -f examples/<tên-ảnh>.jpg
+# rồi ghi nguồn + giấy phép vào bảng trong examples/README.md.
+examples/**/*.jpg
+examples/**/*.jpeg
+examples/**/*.png
+examples/**/*.webp
+examples/**/*.gif
+examples/**/*.bmp
+examples/**/*.heic
+examples/**/*.avif
+!examples/README.md
+!examples/outputs/.gitkeep
 
 # ============================================================
 # Môi trường Python (.venv ở đây nặng ~15GB)
@@ -57,29 +165,38 @@ pip-wheel-metadata/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pytype/
 .coverage
 .coverage.*
+coverage.xml
 htmlcov/
 .tox/
 .nox/
+*.prof
+*.lprof
+
+# Jupyter — .ipynb_checkpoints giữ bản nháp CŨ của notebook, gồm cả output
+# đã in ra (token, đường dẫn, dữ liệu mẫu) mà bạn tưởng đã xoá.
+.ipynb_checkpoints/
 
 # ============================================================
 # Gradio / runtime
 # ============================================================
-# Thư mục tạm + file flag Gradio sinh lúc chạy.
+# Thư mục tạm + file flag Gradio sinh lúc chạy. `flagged/` chứa ảnh người
+# dùng bấm nút flag — cùng loại rủi ro với data/.
 .gradio/
 flagged/
 gradio_cached_examples/
 
-# Log chạy nền (README hướng dẫn nohup ... > serve.log).
+# Log chạy nền (README hướng dẫn nohup ... > serve.log). Log của service này
+# có in prompt và đường dẫn ảnh.
 *.log
+logs/
 nohup.out
+*.pid
 
-# Ảnh sinh ra lúc chạy. Hai lưu ý:
-#  - KHÔNG dùng pattern *.png / *.jpg toàn cục: examples/ là asset của demo và
-#    phải được commit — xem ghi chú cuối file.
-#  - Dấu "/" đầu cũng bắt buộc ở đây, nếu không "outputs/" sẽ khớp cả
-#    examples/outputs/ và xoá mất ảnh kết quả dựng sẵn.
+# Ảnh sinh ra lúc chạy. Dấu "/" đầu bắt buộc, nếu không "outputs/" sẽ khớp cả
+# examples/outputs/.
 /outputs/
 /output/
 /results/
@@ -87,49 +204,52 @@ nohup.out
 /temp/
 
 # ============================================================
-# IDE / hệ điều hành
+# IDE / hệ điều hành / tàn dư merge
 # ============================================================
 .vscode/
 .idea/
+.fleet/
+.zed/
+.history/
+*.sublime-workspace
+*.sublime-project
 *.swp
 *.swo
 *~
+*.bak
+*.orig
+*.rej
 .DS_Store
+.AppleDouble
+.Spotlight-V100
+.Trashes
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
 
 # ============================================================
-# Công cụ trợ lý
+# Công cụ trợ lý AI
 # ============================================================
+# Chặn cả thư mục: nó chứa cấu hình + transcript local, hay dính đường dẫn
+# máy cá nhân và nội dung hội thoại. CLAUDE.md ở gốc repo (nếu có) là tài
+# liệu cho cả team nên vẫn được commit.
+.claude/
 .claude-dev-helper/
-.claude/settings.local.json
+.cursor/
+.aider*
+.continue/
 
 # ============================================================
 # GIỮ LẠI có chủ đích
 # ============================================================
-# examples/          (3.5MB) ảnh mẫu + kết quả dựng sẵn. Đây là ASSET chức
-#                    năng, không phải data: Dockerfile COPY vào image và UI
-#                    đọc để hiện ví dụ bấm-là-chạy. Thiếu thì tính năng demo
-#                    cache mất tác dụng. Giấy phép từng ảnh ghi trong
-#                    examples/README.md.
-# uv.lock            (450KB) khoá phiên bản — bắt buộc commit để build lặp lại được.
-# config/example.env template biến môi trường, không chứa bí mật.
+# uv.lock            (426KB) khoá phiên bản — BẮT BUỘC commit, không có nó
+#                    thì build không lặp lại được.
+# config_setup/base.example.yaml   template, không chứa secret.
+# config_setup/smoke.yaml          config smoke test, không chứa secret.
+# src/imagegen/hidream/vendor/     code bên thứ ba (MIT) — cố ý commit, xem
+#                    VENDOR.md. Không có nó thì service không chạy được.
 #
-# Muốn loại kết quả dựng sẵn khỏi repo thì thêm: examples/outputs/
-# --- Secret GCS + archive trọng số ---------------------------------------
-#
-# "ai-asset.json" KHÔNG khớp file thật "ai-asset-amb.json" — pattern cũ để
-# lọt key service account vào git. Dùng wildcard để mọi biến thể tên đều
-# dính, và chặn luôn cả thư mục secrets/.
-ai-asset*.json
-*-key.json
-*service-account*.json
-# Loại NỘI DUNG chứ không loại thư mục: git không đi vào một thư mục đã
-# bị ignore, nên "/secrets/" + "!/secrets/README.md" sẽ không bao giờ
-# giữ lại được README.
-/secrets/*
-!/secrets/README.md
-
-# Archive trọng số dựng bằng scripts/pack_models.sh (hàng chục GB).
-models.zip
-models.tar
-models.tar.*
+# ⚠️ NHỮNG THỨ .gitignore KHÔNG SỬA ĐƯỢC — phải tự rà trước khi push public:
+#   • Hostname/IP nội bộ, tên bucket GCS, tên user broker đang nằm trong
+#     README.md, docker-compose.yml, scripts/loadtest_queue.py.
+#   • Lịch sử git: `.gitignore` không gỡ thứ đã commit ở commit cũ.

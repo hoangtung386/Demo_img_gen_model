@@ -4,45 +4,48 @@ services:
   # khởi động (depends_on: service_completed_successfully bên dưới).
   #
   # Thay hẳn cho đường HuggingFace: không HF_TOKEN, không accept license lúc
-  # deploy, không phụ thuộc hub còn sống hay không. Đặt QIE_MODELS_URI trong
+  # deploy, không phụ thuộc hub còn sống hay không. Đặt IMG_MODELS_URI trong
   # .env; bỏ trống thì compose báo lỗi ngay chứ không chạy với models rỗng.
   # ---------------------------------------------------------------------
   model-fetcher:
     build:
       context: .
       dockerfile: Dockerfile.fetch
-    image: qwen-lightning-fetch:0.1.0
-    container_name: qwen-lightning-fetch
+    image: imagegen-fetch:0.2.0
+    container_name: imagegen-fetch
     environment:
       # Mặc định ghim sẵn nên KHÔNG cần .env: clone repo, thả
-      # ai-asset-amb.json vào gốc, `docker compose up` là chạy. Đặt biến
-      # QIE_MODELS_URI trong môi trường để trỏ sang archive khác.
-      QIE_MODELS_URI: "${QIE_MODELS_URI:-gs://ai-model-new-amb/models.zip}"
-      QIE_MODELS_DIR: /models
-      QIE_GCS_KEY_FILE: "${QIE_GCS_KEY_FILE:-/secrets/gcs-key.json}"
-      QIE_MODELS_FORCE: "${QIE_MODELS_FORCE:-false}"
+      # <key-file>.json vào gốc, `docker compose up` là chạy. Đặt biến
+      # IMG_MODELS_URI trong môi trường để trỏ sang archive khác.
+      # ĐỔI SAU KHI ĐÓNG GÓI ARCHIVE MỚI. Archive cũ chứa weight Qwen —
+      # fetcher sẽ chạy thành công rồi app báo thiếu file. Dựng archive:
+      #   make download && make pack DEST=gs://<bucket>/
+      IMG_MODELS_URI: "${IMG_MODELS_URI:-gs://<your-bucket>/hidream-o1-sdnq-uint4.zip}"
+      IMG_MODELS_DIR: /models
+      # Key DOWNLOAD model nội bộ — file trong config_setup/credentials/ mount
+      # vào /credentials. Khác key upload bucket user (queue service dùng).
+      IMG_GCS_KEY_FILE: "${IMG_GCS_KEY_FILE:-/credentials/model-download-key.json}"
+      IMG_MODELS_FORCE: "${IMG_MODELS_FORCE:-false}"
     volumes:
       # rw: đây là service DUY NHẤT được ghi vào models/.
       - ./models:/models
-      # Gốc repo, read-only: fetch_models.sh dò key service account ở đây
-      # (ai-asset-amb.json). Mount cả thư mục chứ không trỏ thẳng vào file —
-      # bind mount vào một file không tồn tại thì Docker lặng lẽ tạo ra một
-      # THƯ MỤC cùng tên và lỗi hiện ra ở chỗ khó hiểu.
+      # Gốc repo, read-only: fetch_models.sh dò key ở /project/config_setup/
+      # credentials/ (fallback). Mount cả thư mục chứ không trỏ thẳng vào file
+      # — bind mount vào file không tồn tại thì Docker lặng lẽ tạo THƯ MỤC
+      # cùng tên và lỗi hiện ra ở chỗ khó hiểu.
       - .:/project:ro
-      # Mount cả THƯ MỤC chứ không phải file key: thư mục thì Docker tạo được
-      # nếu chưa có, còn trỏ bind mount vào một file không tồn tại thì Docker
-      # lặng lẽ tạo ra một thư mục cùng tên và script đọc key thành lỗi khó
-      # hiểu. Thư mục rỗng => script tự rơi về ADC, đúng cách khi VM trên GCE
-      # đã gắn service account (không có file key nào để rò rỉ).
-      - ./secrets:/secrets:ro
+      # Thư mục secret chung (2 key: download model + upload bucket). Mount cả
+      # THƯ MỤC: thư mục rỗng => script tự rơi về ADC, đúng cách khi VM trên
+      # GCE đã gắn service account (không có file key nào để rò rỉ).
+      - ./config_setup/credentials:/credentials:ro
     restart: "no"
 
-  qwen-lightning:
+  imagegen:
     build:
       context: .
       dockerfile: Dockerfile
-    image: qwen-lightning:0.1.0
-    container_name: qwen-lightning
+    image: imagegen:0.2.0
+    container_name: imagegen
 
     # Yêu cầu host: driver NVIDIA >= 525 (torch cu128 chạy nhờ CUDA minor
     # version compatibility) và nvidia-container-toolkit đã cài + đăng ký
@@ -54,8 +57,8 @@ services:
       - "${HOST_PORT:-7860}:7860"
 
     # Trọng số đã nằm sẵn ở ./models nhờ model-fetcher. App không khởi động
-    # nếu bước đó hỏng — thà dừng còn hơn chạy rồi đổ traceback sau 2 phút
-    # nạp model, hoặc tệ hơn là lặng lẽ tải 65GB từ Hub.
+    # nếu bước đó hỏng — thà dừng còn hơn chạy rồi đổ traceback sau khi nạp
+    # model, hoặc tệ hơn là lặng lẽ tải ~10GB từ Hub.
     depends_on:
       model-fetcher:
         condition: service_completed_successfully
@@ -69,38 +72,37 @@ services:
 
     # Ghi đè lên env_file cho những giá trị chỉ đúng bên trong container.
     environment:
-      QIE_SERVER_NAME: "0.0.0.0"
-      QIE_PORT: "7860"
+      IMG_SERVER_NAME: "0.0.0.0"
+      IMG_PORT: "7860"
 
-      # Không còn biến QIE_SHARE: app luôn dựng link *.gradio.live và dừng
+      # Không còn biến IMG_SHARE: app luôn dựng link *.gradio.live và dừng
       # hẳn nếu không dựng được. Container vẫn publish 0.0.0.0:7860 như cũ,
       # nên trong LAN cứ vào thẳng IP:7860 — link công khai là đường thứ hai
       # chạy song song, KHÔNG có xác thực. Đặt firewall cho tương xứng.
 
       # .model_paths.env ghi đường dẫn tuyệt đối trên host nên vô nghĩa ở đây
       # (đã loại khỏi image qua .dockerignore). Trỏ thẳng vào chỗ mount.
-      # Đổi QIE_RANK / QIE_NUM_STEPS / QIE_PRECISION thì sửa tên file này theo.
-      QIE_BASE_MODEL_LOCAL: /app/models/Qwen-Image-Edit-2509
-      QIE_TRANSFORMER_PATH: /app/models/lightning-251115/svdq-int4_r32-qwen-image-edit-2509-lightning-4steps-251115.safetensors
+      # MỘT thư mục duy nhất — không còn cặp "base pipeline + transformer rời"
+      # như thời Qwen + Nunchaku.
+      IMG_MODEL_PATH: /app/models/HiDream-O1-Image-SDNQ-uint4
 
-      # --- Một card A100-40GB -------------------------------------------
-      # Tổng weight resident đo được là 26.4 GiB (text_encoder 15.4 +
-      # transformer INT4 10.7 + vae 0.24), vừa trong 39 GiB của A100 với
-      # ~13 GiB dư cho activation. 'none' giữ mọi component nằm lại trên GPU:
-      # không có lần chuyển CPU<->GPU nào lúc sinh ảnh.
-      #
-      # KHÔNG để 'auto' ở đây dù logic auto đã biết chọn đúng: production nên
-      # tự quyết định thay vì phụ thuộc vào dò phần cứng lúc chạy.
-      # Card nhỏ hơn 32 GiB thì đổi thành 'model' (chậm hơn nhiều, ~41s/ảnh).
-      QIE_OFFLOAD: "none"
-      QIE_DEVICE: "cuda:0"
+      # --- VRAM ----------------------------------------------------------
+      # Model SDNQ uint4 đỉnh ~10.9 GiB (so với 26.4 GiB của bản Qwen cũ),
+      # nên nằm trọn trên MỘT card và card 24GB (4090, A10G) giờ cũng đủ.
+      # Không còn biến offload: accelerate device_map lo phần đặt module,
+      # và với một khối 11 GiB thì không có gì để chia.
+      IMG_DEVICE: "cuda:0"
 
-      # A100 là Ampere (sm_80) -> bắt buộc INT4. Chỉ Blackwell (sm_120/121)
-      # mới dùng FP4; nunchaku sẽ raise ValueError nếu đặt sai.
-      QIE_PRECISION: "int4"
+      # SDNQ thuần PyTorch nên chạy trên mọi kiến trúc có bf16 (Ampere trở
+      # lên). Không còn phải chọn int4/fp4 theo đời card như nunchaku.
+
+      # flash-attn KHÔNG có trong image (build mất ~1h và phải khớp
+      # torch + CUDA). Bật lên nếu bạn tự dựng image có nó — xem
+      # src/imagegen/hidream/vendor/VENDOR.md, patch 1.
+      IMG_USE_FLASH_ATTN: "false"
 
       # Toàn bộ weight đã nằm ở /app/models. Khoá Hub lại để một biến env
-      # thiếu không biến thành lần tải 65GB âm thầm giữa production.
+      # thiếu không biến thành lần tải ~10GB âm thầm giữa production.
       HF_HOME: /app/.hf_cache
       HF_HUB_OFFLINE: "1"
       # Không có gì cần tải nên không cần token trong container. env_file nạp
@@ -108,31 +110,181 @@ services:
       # tiến trình.
       HF_TOKEN: ""
 
-      # Allocator co giãn: kích thước ảnh ra thay đổi theo tỉ lệ ảnh người
-      # dùng nên mỗi request cấp phát một shape khác nhau. Không có cờ này
-      # thì phân mảnh sẽ đẩy service tới OOM dù VRAM còn trống.
+      # Allocator co giãn: model snap về 11 độ phân giải khác nhau nên shape
+      # cấp phát vẫn đổi giữa các request. Không có cờ này thì phân mảnh sẽ
+      # đẩy service tới OOM dù VRAM còn trống.
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
 
-      # Trả trước chi phí lượt sinh ảnh đầu tiên lúc khởi động, để người dùng
-      # đầu tiên không phải chờ nạp cubin + dựng CUDA context.
-      QIE_WARMUP: "true"
+      # Trả trước chi phí lượt sinh ảnh đầu tiên lúc khởi động. Chỉ chạy
+      # IMG_WARMUP_STEPS bước (không phải cả 50): chi phí cần trả trước là
+      # chi phí MỘT LẦN, không nhân theo số bước.
+      IMG_WARMUP: "true"
+      IMG_WARMUP_STEPS: "${IMG_WARMUP_STEPS:-2}"
+
+      # ── Tốc độ — xem docs/PERFORMANCE.md ──
+      # Hai cờ đầu KHÔNG đổi ảnh ra, chỉ đổi cách tính:
+      #   attention: tách hai lượt SDPA thay cho mask 4D (mask chặn backend
+      #     flash của PyTorch và bắt expand [B, heads, S, S] mỗi layer).
+      #   dequantize: giải nén trọng số SDNQ MỘT LẦN lúc nạp thay vì lại từ
+      #     đầu ở mỗi forward pass. "auto" tự đo VRAM — card 24GB sẽ bật.
+      IMG_ATTENTION_MODE: "${IMG_ATTENTION_MODE:-auto}"
+      IMG_DEQUANTIZE: "${IMG_DEQUANTIZE:-auto}"
+      # Ba cờ dưới ĐỔI CHẤT LƯỢNG lấy tốc độ — mặc định là hành vi cũ.
+      IMG_CFG_INTERVAL_START: "${IMG_CFG_INTERVAL_START:-0.0}"
+      IMG_CFG_INTERVAL_END: "${IMG_CFG_INTERVAL_END:-1.0}"
+      IMG_SNAP_RESOLUTION: "${IMG_SNAP_RESOLUTION:-true}"
 
     volumes:
       # Trọng số read-only: container này chỉ đọc. Ghi vào đây là việc của
-      # model-fetcher. Sau khi bỏ 5 shard transformer BF16 không dùng tới
-      # thì còn ~26GB.
+      # model-fetcher. Bản SDNQ uint4 chỉ ~9.9GB trên đĩa.
       - ./models:/app/models:ro
       # Cache HF ghi được (thực tế rỗng vì HF_HUB_OFFLINE=1) + chỗ Gradio
       # ghi file tạm.
       - hf-cache:/app/.hf_cache
+      # Ảnh mẫu + kết quả dựng sẵn cho khối gr.Examples. Mount thay vì bake
+      # vào image (xem Dockerfile): thư mục không có trên host thì Docker tự
+      # tạo rỗng và UI bỏ qua các case thiếu file — demo vẫn chạy. Thả bộ ảnh
+      # vào ./examples rồi restart container là ví dụ hiện ra, không build lại.
+      - ./examples:/app/examples:ro
 
     shm_size: "1gb"
 
     # Makefile dò phần cứng và set biến này: một GPU hoặc A100 => coi là
     # server production => 'unless-stopped'. Máy nhiều GPU (bàn dev) giữ 'no'
     # để app crash thì dừng hẳn, không bị restart lặp che mất traceback gốc.
-    # Ghi đè tay:  make run QIE_RESTART_POLICY=no
-    restart: "${QIE_RESTART_POLICY:-no}"
+    # Ghi đè tay:  make run IMG_RESTART_POLICY=no
+    restart: "${IMG_RESTART_POLICY:-no}"
+
+  # ---------------------------------------------------------------------
+  # Queue worker: consume request từ RabbitMQ, sinh ảnh, publish kết quả.
+  # Dùng CHUNG image với service Gradio (cùng weights, cùng model) nhưng
+  # entrypoint chạy main_queue.py thay vì serve UI. Config đọc từ
+  # config_setup/base.yaml (mount read-only) — KHÔNG dùng biến IMG_* runtime.
+  #
+  # Bật bằng profile để `docker compose up` mặc định (Gradio) không kéo theo:
+  #   docker compose --profile queue up imagegen-queue
+  # ---------------------------------------------------------------------
+  imagegen-queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: imagegen:0.2.0
+    container_name: imagegen-queue
+    profiles: ["queue"]
+    gpus: all
+
+    # Healthcheck HTTP (main_queue.py mở cổng 8395: /healthz, /readyz).
+    ports:
+      - "${QUEUE_HEALTH_PORT:-8395}:8395"
+
+    depends_on:
+      model-fetcher:
+        condition: service_completed_successfully
+
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      # Model path giống service Gradio — cùng weights trên ./models.
+      IMG_MODEL_PATH: /app/models/HiDream-O1-Image-SDNQ-uint4
+      IMG_USE_FLASH_ATTN: "false"
+      HF_HOME: /app/.hf_cache
+      HF_HUB_OFFLINE: "1"
+      HF_TOKEN: ""
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+    # main_queue.py là entrypoint riêng cho consumer. Override command của
+    # image (vốn chạy serve). Model + broker connection nằm cả trong đó.
+    command: ["python", "main_queue.py"]
+
+    volumes:
+      - ./models:/app/models:ro
+      - hf-cache:/app/.hf_cache
+      # Config queue service (base.yaml + credentials/). Read-only. Bao gồm
+      # user-upload-key.json mà storage backend dùng để upload bucket cho user.
+      - ./config_setup:/app/config_setup:ro
+      # Audit 7-day store — ghi được, persist ra host để inspect.
+      - ./data_predict:/app/data_predict
+
+    shm_size: "1gb"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8395/readyz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
+
+    restart: "${IMG_RESTART_POLICY:-no}"
+
+  # ---------------------------------------------------------------------
+  # SMOKE TEST đường queue — KHÔNG sinh ảnh thật.
+  #
+  # Vì sao tồn tại: Application.run() nạp model TRƯỚC khi spawn consumer +
+  # publisher, nên trên máy không có GPU + ~10GB weight thì không có cách nào
+  # thử được chuỗi broker → worker → queue_out. Hậu quả: lỗi cấu hình queue
+  # (sai vhost, thiếu base.yaml, queue_out không bind) chỉ lộ ra SAU khi đã
+  # thuê GPU. Service này dùng chung image nhưng chạy config_setup/smoke.yaml
+  # (processor: echo + storage: local) nên chạy được ở bất cứ đâu.
+  #
+  #   export IMG_RMQ_HOST=<broker-host> IMG_RMQ_VHOST=gen-image \
+  #          IMG_RMQ_USER=<username> IMG_RMQ_PASSWORD=...
+  #   docker compose --profile smoke up -d --no-deps imagegen-queue-smoke
+  #   python scripts/loadtest_queue.py --rate 5 --duration 10   # bắn tải
+  #   # rồi xem gen-image-queue-out trên RabbitMQ UI
+  #
+  # `--no-deps` là bắt buộc: service này KHÔNG khai báo depends_on
+  # model-fetcher, nhưng gõ thiếu cờ ở các lệnh khác thì compose vẫn kéo
+  # fetcher dậy và tải ~9.9GB weight — thứ smoke test không cần.
+  # ---------------------------------------------------------------------
+  imagegen-queue-smoke:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: imagegen:0.2.0
+    container_name: imagegen-queue-smoke
+    profiles: ["smoke"]
+    # KHÔNG `gpus: all`, KHÔNG mount ./models: echo processor không đụng tới
+    # torch nên container chạy được trên máy không có card.
+
+    ports:
+      - "${SMOKE_HEALTH_PORT:-8396}:8395"
+
+    environment:
+      # Trỏ loader sang file smoke thay cho base.yaml (xem config/loader.py).
+      IMG_QUEUE_CONFIG: /app/config_setup/smoke.yaml
+      # Broker: smoke.yaml để trống, giá trị thật lấy từ môi trường của
+      # người chạy lệnh — secret không nằm lại trong repo.
+      #
+      # KHÔNG dùng cú pháp bắt buộc `${VAR:?...}` ở đây: compose interpolate
+      # TOÀN BỘ file trước khi chọn service, nên một biến thiếu sẽ làm hỏng cả
+      # `docker compose build imagegen` lẫn `up` của production. Thiếu
+      # biến thì để loader báo lỗi rõ ràng trong log container (config/loader.py).
+      IMG_RMQ_HOST: "${IMG_RMQ_HOST:-}"
+      IMG_RMQ_PORT: "${IMG_RMQ_PORT:-5672}"
+      IMG_RMQ_USER: "${IMG_RMQ_USER:-}"
+      IMG_RMQ_PASSWORD: "${IMG_RMQ_PASSWORD:-}"
+      IMG_RMQ_VHOST: "${IMG_RMQ_VHOST:-}"
+      # Độ trễ giả lập mỗi request, thay cho thời gian sinh ảnh thật.
+      IMG_ECHO_DELAY_SECONDS: "${IMG_ECHO_DELAY_SECONDS:-0.2}"
+
+    command: ["python", "main_queue.py"]
+
+    volumes:
+      - ./config_setup:/app/config_setup:ro
+      - ./data_predict:/app/data_predict
+      # Ảnh placeholder của local storage backend (data/smoke_out).
+      - ./data:/app/data
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8395/readyz').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    restart: "no"
 
 volumes:
   hf-cache:

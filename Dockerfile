@@ -3,9 +3,9 @@
 # =============================================================================
 # Builder — dựng virtualenv đầy đủ bằng uv rồi copy nguyên khối sang runtime.
 #
-# Python 3.13 chứ không phải 3.11: wheel nunchaku được build riêng cho từng
-# tổ hợp python × torch × CUDA, và bản đang dùng là cp313 + torch2.9 +
-# cu12.8. Lệch một thành phần là lỗi ABI ngay lúc import.
+# Python 3.13: torch >= 2.10 và transformers 4.57.1 đều có wheel cp313.
+# Không còn ràng buộc ABI cứng như thời nunchaku (wheel build riêng cho từng
+# tổ hợp python × torch × CUDA) — đổi minor Python giờ chỉ cần `uv lock` lại.
 # =============================================================================
 FROM python:3.13-slim-bookworm AS builder
 
@@ -26,63 +26,42 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 
-# `uv sync` cài TOÀN BỘ dependency theo uv.lock, KỂ CẢ nunchaku: pyproject
-# khai báo nunchaku như dependency thật và [tool.uv.sources] ghim URL wheel
-# cp313 khớp đúng python của image này. torch==2.9.0 từ PyPI mang sẵn CUDA
-# 12.8 nên khớp luôn với wheel cu12.8.
+# `uv sync` cài TOÀN BỘ dependency theo uv.lock.
 #
 # --frozen: dùng nguyên uv.lock, không được tự giải lại. Lock lệch pyproject
 # thì build fail ở đây chứ không âm thầm cài phiên bản khác.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
-# Cài lại đúng wheel nunchaku một cách tường minh. `uv sync` ở trên đã cài
-# đúng bản này rồi nên đây là bước thừa về mặt kết quả — giữ lại vì nó ghim
-# rõ ràng tổ hợp đang dùng ngay trong Dockerfile, và vì nếu ai đó gỡ
-# [tool.uv.sources] ra thì bước này vẫn cứu được.
+# Chốt lại tổ hợp phiên bản NGAY LÚC BUILD. Đọc metadata chứ KHÔNG import:
+# `import torch` / `import sdnq` nạp extension cần CUDA runtime, mà builder
+# không có GPU.
 #
-# THỨ TỰ BẮT BUỘC: phải chạy SAU `uv sync`. nunchaku khai báo `diffusers`
-# KHÔNG ghim phiên bản; chạy trước thì uv kéo diffusers mới nhất (>=0.37),
-# nơi chữ ký QwenEmbedRope.forward() đã đổi và transformer nunchaku gọi sai.
-# Chạy sau thì diffusers==0.36.0 đã có sẵn và thoả requirement nên uv không
-# đụng tới.
-ARG NUNCHAKU_WHEEL=https://github.com/nunchaku-tech/nunchaku/releases/download/v1.2.1/nunchaku-1.2.1+cu12.8torch2.9-cp313-cp313-linux_x86_64.whl
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/venv/bin/python "${NUNCHAKU_WHEEL}"
-
-# Chốt lại tổ hợp phiên bản NGAY LÚC BUILD. Đọc metadata chứ không import:
-# `import nunchaku` nạp extension C cần CUDA runtime, mà builder không có GPU.
-# Không có bước này thì diffusers bị nâng nhầm chỉ lộ ra sau 2 phút nạp model
-# bằng một TypeError khó lần.
-RUN /opt/venv/bin/python - <<'PY'
-from importlib.metadata import version
-checks = {
-    "diffusers": "0.36.0",
-    "torch": "2.9.0",
-    "transformers": "5.15.0",
-}
-for name, want in checks.items():
-    got = version(name)
-    assert got == want, f"{name}: cần {want}, đang là {got}"
-nunchaku = version("nunchaku")
-assert nunchaku.startswith("1.2.1+cu12.8torch2.9"), f"nunchaku: {nunchaku}"
-print(f"OK — diffusers {checks['diffusers']}, torch {checks['torch']}, "
-      f"nunchaku {nunchaku}")
-PY
+# transformers ghim cứng 4.57.1: hidream/vendor/qwen3_vl_transformers.py là
+# bản copy-sửa của modeling code Qwen3-VL nên bám vào nội bộ transformers.
+# Một lần `uv lock` vô ý nâng lên 5.x sẽ chỉ lộ ra sau vài chục giây nạp
+# model, bằng một traceback khó lần.
+RUN /opt/venv/bin/python -c "\
+from importlib.metadata import version; \
+assert version('transformers') == '4.57.1', version('transformers'); \
+_v = tuple(int(x) for x in version('torch').split('.')[:2]); \
+assert _v >= (2, 10), version('torch'); \
+print('OK — torch', version('torch'), '| transformers', version('transformers'), \
+      '| sdnq', version('sdnq'), '| diffusers', version('diffusers'))"
 
 # =============================================================================
 # Runtime
 # =============================================================================
 FROM python:3.13-slim-bookworm
 
-# libgomp1  : OpenMP runtime các kernel torch/nunchaku cần.
-# libstdc++6: nunchaku/_C.so link trực tiếp vào (readelf -d cho thấy NEEDED).
-#             Base image có sẵn, khai báo tường minh để một bản slim tương
-#             lai gỡ đi thì lỗi lộ ra lúc build chứ không phải lúc import.
-# curl      : dùng cho HEALTHCHECK.
+# libgomp1: OpenMP runtime các kernel torch cần.
+# curl    : dùng cho HEALTHCHECK.
+#
+# libstdc++6 đã được gỡ khỏi danh sách: nó chỉ cần cho nunchaku/_C.so, thứ
+# không còn tồn tại sau khi thay lõi. SDNQ thuần PyTorch, không có extension
+# C nào của riêng nó.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
-        libstdc++6 \
         curl \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -95,7 +74,7 @@ COPY --from=builder /opt/venv /opt/venv
 # HF_HOME KHÔNG trỏ vào /app/models: thư mục đó được mount read-only, thư
 # viện nào lỡ ghi metadata vào đấy sẽ nổ. Để riêng một chỗ ghi được, và khoá
 # HF_HUB_OFFLINE=1 để mọi đường rò xuống Hub thành lỗi dừng hẳn thay vì một
-# lần tải 65GB im lặng. Trọng số do model-fetcher kéo từ GCS về /app/models
+# lần tải ~10GB im lặng. Trọng số do model-fetcher kéo từ GCS về /app/models
 # nên container này KHÔNG cần mạng tới HuggingFace và KHÔNG cần HF_TOKEN.
 # Build sẽ cảnh báo SecretsUsedInArgOrEnv cho HF_TOKEN bên dưới. Đó là báo
 # nhầm và ĐỪNG gỡ dòng đó ra: nó đặt token thành RỖNG chứ không nhét bí mật
@@ -107,8 +86,9 @@ ENV PATH=/opt/venv/bin:$PATH \
     HF_HOME=/app/.hf_cache \
     HF_HUB_OFFLINE=1 \
     HF_TOKEN="" \
-    QIE_SERVER_NAME=0.0.0.0 \
-    QIE_PORT=7860
+    IMG_SERVER_NAME=0.0.0.0 \
+    IMG_PORT=7860 \
+    IMG_USE_FLASH_ATTN=false
 
 WORKDIR /app
 
@@ -116,20 +96,36 @@ RUN mkdir -p /app/.hf_cache
 
 # Chạy từ source tree chứ không dùng package đã cài trong site-packages:
 # config.py suy ra PROJECT_ROOT bằng Path(__file__).parent×3, nên phải nằm ở
-# /app/src/qwen_lightning/ thì .env và models/ mới resolve về /app.
+# /app/src/imagegen/ thì .env và models/ mới resolve về /app.
+# Kèm cả src/imagegen/hidream/vendor/ — code inference của HiDream không
+# có trên PyPI nên phải đi theo image (xem vendor/VENDOR.md).
 COPY src ./src
 COPY scripts ./scripts
 # Ảnh mẫu + ảnh kết quả dựng sẵn (examples/outputs/) cho khối gr.Examples.
-# Bake thẳng vào image nên tester bấm ví dụ là thấy kết quả ngay sau khi
-# container khởi động, không phải chờ warm-up lại. Đổi ảnh hoặc đổi prompt thì
-# chạy lại scripts/warm_examples.py rồi build lại.
-COPY examples ./examples
+# KHÔNG bake vào image: thư mục này chưa bao giờ có trong repo nên `COPY
+# examples` làm mọi lần build từ một bản clone sạch fail ngay tại đây. Image
+# chỉ tạo sẵn chỗ trống; compose mount ./examples:ro từ host lúc chạy (xem
+# service imagegen). Thiếu ảnh thì UI tự bỏ qua case đó
+# (ui/components.py::sample_image, build_demo_cache) — demo chạy bình
+# thường, chỉ là khối ví dụ trống. Dựng lại ảnh kết quả: chạy demo rồi gọi
+# scripts/warm_examples.py trên host, không cần build lại image.
+RUN mkdir -p /app/examples/outputs
+
+# --- Queue worker (RabbitMQ consumer) ------------------------------------
+# main_queue.py là entrypoint riêng cho service imagegen-queue (docker-compose,
+# profile "queue"). Chỉ base.example.yaml được bake (mẫu); base.yaml thật
+# (chứa secret) + credentials/*.json bị .dockerignore chặn — compose mount
+# ./config_setup:ro từ host lúc chạy để inject config + key thật.
+COPY main_queue.py ./main_queue.py
+COPY config_setup ./config_setup
 
 EXPOSE 7860
 
-# start-period phải phủ được thời gian nạp 26.4GB weight lên VRAM. 300s vừa
-# đủ trên NVMe cục bộ nhưng quá sát nếu server thuê để weight trên ổ mạng.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \
+# start-period phải phủ được CẢ nạp ~9.9GB weight LẪN warm-up. Warm-up giờ
+# là một lượt sinh ảnh thật ở 2048² với 50 bước + CFG — hàng chục giây đến
+# vài phút, chứ không phải 4 bước ở 512² như bản Lightning cũ. 900s là mức
+# an toàn; hạ xuống là container bị giết giữa lúc warm-up rồi restart vô tận.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=3 \
     CMD curl -fsS http://localhost:7860/ >/dev/null || exit 1
 
 CMD ["python", "scripts/serve.py"]

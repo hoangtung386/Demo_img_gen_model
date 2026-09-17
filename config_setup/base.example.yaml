@@ -1,0 +1,239 @@
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  FILE MẪU — copy sang base.yaml rồi điền thông số thật.               ║
+# ║      cp config_setup/base.example.yaml config_setup/base.yaml         ║
+# ║  base.yaml (chứa secret) bị .gitignore chặn — KHÔNG commit.           ║
+# ╠══════════════════════════════════════════════════════════════════════╣
+# ║  PHẦN 1 — CONFIG CHUNG MỌI AI SERVICE (BE/DevOps chỉnh)              ║
+# ║  rabbitmq + storage — đồng nhất giữa các service trong org. BE và    ║
+# ║  DevOps quản lý 2 nhóm này: tên queue, broker host, GCS bucket,      ║
+# ║  CDN domain. Service AI khác (face-swap, remove-object…) cùng        ║
+# ║  pattern, chỉ thay tên queue + bucket cụ thể.                        ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+service_version: "v0.1.0"
+
+rabbitmq:
+  # ── BE-relevant: tên queue/exchange + broker connection ──
+  # Điền thông số broker thật (DevOps cấp). KHÔNG commit giá trị thật.
+  host: ""              # vd "<broker-host>"
+  port: 5672
+  user: ""              # vd "google_cloud_amb"
+  password: ""          # secret — điền lúc deploy
+  vhost: ""             # vd "future_self"
+  exchange: "predict-ai-gen-image"
+  queues_in:
+    premium: "gen-image-queue-in-premium"
+    basic_1: "gen-image-queue-in-basic-tier-1"
+    basic_2: "gen-image-queue-in-basic-tier-2"
+    basic_3: "gen-image-queue-in-basic-tier-3"
+  queue_out: "gen-image-queue-out"
+  queue_out_key: "gen-image-queue-out"
+  # 3 modes:
+  # "declare"         → service tự tạo full topology: exchange main/.retry/.dlq
+  #                      + 4 inbound queue có `x-dead-letter-exchange` args
+  #                      + retry sibling (TTL) + DLQ sibling cho mỗi tier.
+  #                      Failure routing dùng broker DLX. Yêu cầu BE/DevOps
+  #                      chấp nhận args trên queue HOẶC queue chưa tồn tại.
+  #                      Hit case `PRECONDITION_FAILED 406` nếu BE đã pre-create
+  #                      queue legacy KHÔNG có DLX → consumer crash.
+  # "declare_minimal" → service tạo TỐI GIẢN: exchange main + 4 inbound queue
+  #                      + 1 outbound queue + 5 bind. KHÔNG DLX args, KHÔNG
+  #                      retry/.dlq queue. Tương thích queue BE pre-create.
+  #                      Failure path → AI reply qua queue_out + ack message
+  #                      gốc; audit trail trên disk
+  #                      (`data_predict/<service>/{fail,error}`).
+  #                      KHUYẾN NGHỊ cho QAS/PRD khi chạy song song BE legacy.
+  # "passive"         → service chỉ verify queues đã tồn tại, fail-fast nếu
+  #                      thiếu. Dùng khi DevOps muốn kiểm soát toàn quyền
+  #                      topology.
+  topology_mode: "declare_minimal"
+
+  # ── Advanced (BE thường KHÔNG đụng — giữ default) ──
+  # Prefetch per-consumer-channel: 4 tier (premium + basic_1/2/3) → 4
+  # channel/container. prefetch_count=1 → 4 unacked/container = fair
+  # distribution multi-container. Mỗi ảnh giờ RẤT đắt nên giữ 1: để container
+  # này ôm nhiều message là chặn các container khác lấy việc.
+  # prefetch_count=0 → auto-tune = clamp(target_sla/avg_inference, 1, prefetch_max).
+  prefetch_count: 1
+  # ĐỔI THEO SỐ ĐO THẬT (scripts/benchmark.py in ra giá trị cần điền).
+  # 50 bước x 2 forward pass (CFG) ở 2048² chậm hơn bản Lightning 4-bước một
+  # bậc độ lớn. Để nguyên 8.0 là cách nhanh nhất làm backlog phình và
+  # message timeout hàng loạt.
+  target_sla_seconds: 600.0    # informational khi prefetch_count > 0
+  avg_inference_seconds: 90.0  # informational khi prefetch_count > 0
+  prefetch_max: 4              # cap cho auto-tune (chỉ áp dụng prefetch_count=0)
+  heartbeat: 600
+  # Reconnect exponential backoff + jitter.
+  reconnect_initial_seconds: 1.0
+  reconnect_max_seconds: 60.0
+  reconnect_jitter: 0.2
+  # Proactive broker healthcheck.
+  broker_healthcheck_interval_seconds: 15.0
+  broker_healthcheck_timeout_seconds: 3.0
+  # Retry / DLQ topology (idempotent declared lúc startup).
+  # Retry queue dùng TTL CỐ ĐỊNH = retry_initial_delay_ms. Không có
+  # exponential backoff — đừng thêm knob multiplier/max_delay trở lại
+  # trừ khi có code thật đọc chúng.
+  retry_exchange_suffix: ".retry"
+  dlq_suffix: ".dlq"
+  # retry_max_attempts: 0 → MỌI lỗi (PERMANENT + TRANSIENT) đều DLQ ngay
+  #   sau attempt đầu tiên. Không có loop retry. Đơn giản, predictable.
+  #   Đặt > 0 (vd 3) nếu service muốn auto-recover từ transient (network
+  #   blip, GCS 5xx); KHI đó pipeline phải đảm bảo HTTP 4xx classify sang
+  #   PERMANENT (xem storage/gcs.py).
+  retry_max_attempts: 0
+  retry_initial_delay_ms: 5000
+
+storage:
+  backend: "gcs"                      # implementation: "gcs" | "local"
+  default_index: 0                    # backend dùng khi inbound không gửi `storage_index`
+  # Multi-backend list. Inbound `storage_index` (int) chọn entry, default
+  # = `default_index`. `cdn_base_url` rỗng → trả signed URL của bucket;
+  # có giá trị → trả URL CDN public `{cdn_base_url}/{object_key}`.
+  # Đặt key upload (bucket cho user) vào config_setup/credentials/
+  # user-upload-key.json rồi trỏ `credentials_path` tới nó (KHÔNG commit
+  # key thật). Key download model nội bộ là file KHÁC: xem app.gcs_key_file.
+  backends:
+    - credentials_path: "config_setup/credentials/user-upload-key.json"
+      bucket: ""                      # vd "<your-bucket>"
+      folder: "media-acme/<your-folder>"
+      feature: "gen-image"
+      signed_url_ttl_minutes: 15
+      cdn_base_url: ""
+    - credentials_path: "config_setup/credentials/user-upload-key.json"
+      bucket: ""                      # vd "<your-bucket>"
+      folder: "genimg_manual_v2"
+      feature: "gen-image"
+      signed_url_ttl_minutes: 15
+      cdn_base_url: ""                # vd "https://<cdn-domain>"
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  PHẦN 2 — CONFIG NỘI BỘ AI (BE KHÔNG ĐỤNG, để mặc định)              ║
+# ║  processor + worker + observability + audit — đặc trưng cho mỗi      ║
+# ║  service AI. BE/DevOps để như dưới đây; chỉ AI team chỉnh khi        ║
+# ║  benchmark / debug. Default values cover 95% trường hợp.             ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+# HiDream-O1-Image (SDNQ 4-bit) inference. Các knob ở đây map thẳng vào
+# imagegen.config.Settings — service queue nạp model qua loader chung.
+processor:
+  type: "hidream_o1"
+  device: ""                    # rỗng → auto (cuda:1 nếu >=2 GPU, else cuda:0)
+  model_path: ""                # rỗng → theo IMG_MODEL_PATH / .model_paths.env
+  model_type: "full"            # "full" (50 bước) | "dev" (28 bước)
+  num_steps: 50
+  # CFG bật THẬT: mỗi bước chạy HAI forward pass (cond + uncond). Đặt 0.0
+  # nếu model_type: dev — bản đó đã chưng cất, không cần CFG.
+  guidance_scale: 5.0
+  shift: 3.0                    # 3.0 cho full, 1.0 cho dev
+  scheduler_name: "default"     # "default" | "flow_match" | "flash"
+  # Kích thước YÊU CẦU. Model snap về 1 trong 11 độ phân giải cứng, nhỏ nhất
+  # 2048x2048 — đặt nhỏ hơn KHÔNG cho ảnh nhỏ hơn, chỉ đổi tỉ lệ khung.
+  width: 2048
+  height: 2048
+  warmup: true
+  # Chỉ chạy `warmup_steps` bước, không phải cả num_steps: chi phí cần trả
+  # trước (CUDA context, allocator, dequant lần đầu, autotune) là chi phí
+  # MỘT LẦN chứ không nhân theo số bước.
+  warmup_steps: 2
+
+  # ── TỐC ĐỘ (xem docs/PERFORMANCE.md trước khi đổi) ──
+  # Đường attention.
+  #   auto / sdpa → tách hai lượt SDPA, KHÔNG dựng mask 4D. Mặc định, nhanh
+  #                 nhất mà không cần cài thêm gì.
+  #   mask        → đường gốc của upstream. Chỉ dùng để đối chiếu numerics.
+  #   flash       → wheel flash-attn (phải tự cài, khớp torch + CUDA).
+  attention_mode: "auto"
+  # Giải nén trọng số SDNQ về bf16 NGAY lúc nạp thay vì giải nén lại ở MỖI
+  # forward pass (~100 lần một ảnh). Đòn bẩy tốc độ lớn nhất trên card 24GB.
+  #   auto → bật nếu VRAM còn đủ chỗ (tự đo lúc nạp)
+  #   bf16 → luôn bật (VRAM ~11GiB → ~18GiB)
+  #   off  → luôn giữ nén (cho card < 20GB)
+  dequantize: "auto"
+  # torch.compile cho decoder. Lượt đầu ở MỖI độ phân giải mới tốn vài phút
+  # biên dịch — chỉ có lãi cho worker chạy dài ở một kích thước cố định.
+  compile_model: false
+  # Khoảng bước (chuẩn hoá 0..1) CÒN chạy nhánh uncond của CFG. Ngoài khoảng
+  # này mỗi bước tốn MỘT forward pass thay vì hai.
+  #   [0.0, 1.0]  → nguyên bản, không bỏ bước nào
+  #   [0.0, 0.75] → bỏ CFG ở 25% bước cuối, nhanh hơn ~12%
+  cfg_interval_start: 0.0
+  cfg_interval_end: 1.0
+  # false → sinh ĐÚNG kích thước yêu cầu (làm tròn bội số 32) thay vì snap
+  # về PREDEFINED_RESOLUTIONS. Rẻ hơn rất nhiều (chi phí ~ số pixel, riêng
+  # attention thì ~ bình phương) nhưng NGOÀI phân bố huấn luyện: chất lượng
+  # tụt rõ. Dùng cho bản nháp/preview, đừng để bật ở PRD.
+  snap_resolution: true
+
+worker:
+  num_ai_workers: 1
+  in_queue_capacity: 2
+  publish_queue_capacity: 5000
+  basic_tier_weights: [5, 3, 2]
+  recent_requests_capacity: 1000
+
+observability:
+  log_level: "INFO"
+  log_payload_max_bytes: 500
+  strip_url_query: true
+
+audit:
+  service_name: "model_gen_img"
+  root_dir: "data_predict"
+  staging_dir: "data/staging"
+  retention_days: 7
+  cleanup_interval_hours: 6
+  enabled: true
+  save_input_image: true
+  save_output_image: true
+  compute_checksum: true
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║  PHẦN 3 — CONFIG APP GRADIO + DOWNLOAD MODEL                         ║
+# ║  Gộp từ config/example.env cũ. Nguồn config DUY NHẤT cho serve.py,   ║
+# ║  download.py và các script model (fetch/pack). Mọi key vẫn có thể    ║
+# ║  override bằng biến môi trường IMG_* / HF_TOKEN / MODEL_ROOT.        ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+app:
+  # --- Tham số sinh ảnh (serve.py + benchmark.py) --- (env: IMG_*)
+  model_type: "full"            # IMG_MODEL_TYPE — "full" | "dev"
+  num_steps: 50                 # IMG_NUM_STEPS — 50 (full) | 28 (dev)
+  guidance_scale: 5.0           # IMG_GUIDANCE_SCALE — 0.0 cho dev
+  shift: 3.0                    # IMG_SHIFT — 3.0 (full) | 1.0 (dev)
+  scheduler_name: "default"     # IMG_SCHEDULER — default|flow_match|flash
+  width: 2048                   # IMG_WIDTH  — snap về PREDEFINED_RESOLUTIONS
+  height: 2048                  # IMG_HEIGHT
+
+  # --- Runtime ---
+  device: ""                    # IMG_DEVICE — rỗng auto (cuda:1 nếu >=2 GPU)
+  warmup: true                  # IMG_WARMUP
+  warmup_steps: 2               # IMG_WARMUP_STEPS — 2 bước là đủ trả trước
+  demo_cache: true              # IMG_DEMO_CACHE
+
+  # --- Tốc độ (docs/PERFORMANCE.md) ---
+  attention_mode: "auto"        # IMG_ATTENTION_MODE — auto|sdpa|mask|flash
+  dequantize: "auto"            # IMG_DEQUANTIZE — auto|bf16|off
+  compile_model: false          # IMG_COMPILE
+  cfg_interval_start: 0.0       # IMG_CFG_INTERVAL_START
+  cfg_interval_end: 1.0         # IMG_CFG_INTERVAL_END — <1.0 bỏ CFG cuối
+  snap_resolution: true         # IMG_SNAP_RESOLUTION — false = nháp, nhanh
+
+  # --- Nguồn model (download.py) ---
+  model_root: "models"          # MODEL_ROOT
+  # IMG_BASE_MODEL. Repo MIT, KHÔNG gated — khác Qwen trước đây, không cần
+  # accept license và không bắt buộc HF_TOKEN.
+  base_model: "WaveCut/HiDream-O1-Image-SDNQ-4bit-dynamic-uint4-th1e-2"
+  model_path: ""                # IMG_MODEL_PATH — thư mục local đã tải
+
+  # --- Server / UI (serve.py) ---
+  server_name: "0.0.0.0"        # IMG_SERVER_NAME
+  server_port: 7860             # IMG_PORT
+
+  # --- HuggingFace --- (secret: set qua env HF_TOKEN, đừng commit)
+  hf_token: ""                  # HF_TOKEN — tuỳ chọn, repo không gated
+
+  # --- Nguồn trọng số cho Docker (GCS fetch_models.sh) ---
+  models_uri: ""                # IMG_MODELS_URI — gs://bucket/path
+  # Key download model nội bộ (đường dẫn TRONG container: /credentials).
+  gcs_key_file: "/credentials/model-download-key.json"   # IMG_GCS_KEY_FILE
+  models_force: false           # IMG_MODELS_FORCE

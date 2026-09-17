@@ -18,10 +18,18 @@
 # Với tar.zst thì `gcloud storage cat | zstd -d | tar -x` chỉ cần 27GB.
 set -euo pipefail
 
-SRC="${QIE_MODELS_SRC:-models}"
+# Nạp config từ config_setup/base.yaml (nguồn config duy nhất) nếu có Python +
+# PyYAML. Env đã set vẫn thắng (helper tự bỏ qua key đã có env). Chạy trên host
+# nên base.yaml + python sẵn — guard cho chắc, thiếu thì rơi về default dưới.
+_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+if command -v python3 >/dev/null 2>&1 && [ -f "$_SELF_DIR/config_env.py" ]; then
+    eval "$(python3 "$_SELF_DIR/config_env.py" 2>/dev/null || true)"
+fi
+
+SRC="${IMG_MODELS_SRC:-models}"
 OUT="${1:-models.tar.zst}"
 DEST="${2:-}"
-LEVEL="${QIE_ZSTD_LEVEL:-3}"
+LEVEL="${IMG_ZSTD_LEVEL:-3}"
 
 [ -d "$SRC" ] || { echo "Không thấy thư mục $SRC" >&2; exit 1; }
 command -v zstd >/dev/null || {
@@ -43,7 +51,7 @@ if [ -n "$DEST" ]; then
     echo ">>> Upload lên $DEST"
     gcloud storage cp "$OUT" "$DEST"
     echo ">>> Đặt biến này trong .env của server:"
-    echo "    QIE_MODELS_URI=${DEST%/}/$(basename "$OUT")"
+    echo "    IMG_MODELS_URI=${DEST%/}/$(basename "$OUT")"
 else
     echo ">>> Upload bằng:"
     echo "    gcloud storage cp $OUT gs://<bucket>/<path>/"

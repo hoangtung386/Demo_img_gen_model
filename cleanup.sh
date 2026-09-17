@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
-# cleanup.sh — giải phóng VRAM và cổng mà demo Qwen-Image-Edit-2509 Lightning đang chiếm giữ.
+# cleanup.sh — giải phóng VRAM và cổng mà demo HiDream-O1-Image đang chiếm giữ.
 # Dọn cả hai kiểu chạy: container Docker của dự án, và tiến trình chạy trực
-# tiếp trên host (nhận diện qua cổng QIE_PORT). Không ảnh hưởng tiến trình khác.
+# tiếp trên host (nhận diện qua cổng IMG_PORT). Không ảnh hưởng tiến trình khác.
 set -u
 
 # Chạy được từ bất kỳ đâu: `docker compose` cần đúng thư mục có
 # docker-compose.yml, và .env cũng được đọc theo đường dẫn tương đối.
 cd "$(dirname "$0")" || exit 1
 
-PORT="${QIE_PORT:-7860}"
-# Đọc cổng từ .env, chỉ rơi về config/example.env khi .env không khai báo.
-# `break` là bắt buộc: không có nó, template đọc sau sẽ ghi đè cổng thật.
-for _env_file in .env config/example.env; do
-    [ -f "$_env_file" ] || continue
-    _env_port="$(grep -E '^QIE_PORT=' "$_env_file" | head -n1 | cut -d= -f2- \
+PORT="${IMG_PORT:-7860}"
+# Đọc cổng: env IMG_PORT thắng, rồi .env (IMG_PORT=...), cuối cùng
+# config_setup/base.yaml (app.server_port) — nguồn config duy nhất.
+if [ -z "${IMG_PORT:-}" ] && [ -f .env ]; then
+    _env_port="$(grep -E '^IMG_PORT=' .env | head -n1 | cut -d= -f2- \
         | cut -d'#' -f1 | tr -d ' \r')"
-    if [ -n "$_env_port" ]; then
-        PORT="$_env_port"
-        break
-    fi
-done
+    [ -n "$_env_port" ] && PORT="$_env_port"
+fi
+if [ -z "${IMG_PORT:-}" ] && [ "$PORT" = "7860" ] && [ -f config_setup/base.yaml ]; then
+    # Lấy server_port trong khối app: (dòng thụt lề dưới `app:`).
+    _yaml_port="$(awk '/^app:/{a=1;next} /^[a-zA-Z]/{a=0} a&&/^[[:space:]]+server_port:/{gsub(/[^0-9]/,"");print;exit}' config_setup/base.yaml)"
+    [ -n "$_yaml_port" ] && PORT="$_yaml_port"
+fi
 
 echo ">>> Dọn dẹp demo trên cổng: $PORT"
 
@@ -69,7 +70,7 @@ if [ -n "${PID// }" ]; then
         kill -9 $PID 2>/dev/null || true
     fi
     echo ">>> Đã dừng tiến trình. VRAM và cổng $PORT đã được giải phóng."
-    # QIE_SHARE=true khiến Gradio chạy kèm tiến trình tunnel `frpc`. Bị SIGKILL
+    # IMG_SHARE=true khiến Gradio chạy kèm tiến trình tunnel `frpc`. Bị SIGKILL
     # theo tiến trình cha thì frpc thành mồ côi và vẫn giữ link share cũ.
     # Lọc theo `-l $PORT`: máy có thể đang chạy demo Gradio khác, kill hết
     # `frpc` sẽ ngắt luôn tunnel của họ.

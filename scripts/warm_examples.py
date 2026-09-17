@@ -4,11 +4,19 @@ Demo phải đang chạy (host hoặc container) trước khi gọi script này,
 gửi request qua Gradio API chứ không tự nạp model:
 
     python scripts/warm_examples.py              # localhost:7860
-    python scripts/warm_examples.py http://192.168.5.233:7860
+    python scripts/warm_examples.py http://<demo-server-ip>:7860
 
 Chạy lại mỗi khi đổi danh sách trong ``ui/examples_spec.py``, đổi ảnh mẫu,
-hoặc sửa prompt — ảnh dựng sẵn cũ sẽ không còn khớp với những gì model sinh ra.
+hoặc sửa prompt — ảnh dựng sẵn cũ sẽ không còn khớp với những gì model sinh
+ra.
+
+CẢNH BÁO SAU KHI THAY LÕI SANG HiDream-O1: mỗi case giờ tốn hàng chục giây
+đến vài phút (50 bước, CFG bật, 2048²) thay vì ~8s của bản Lightning cũ.
+Chạy hết bộ ví dụ có thể mất 30+ phút. Và PHẢI chạy lại: ảnh trong
+``examples/outputs/`` hiện là của model cũ, để nguyên thì demo trưng ra kết
+quả không phải do model đang chạy sinh ra.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -20,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from gradio_client import Client, handle_file  # noqa: E402
 
-from qwen_lightning.ui import examples_spec as spec  # noqa: E402
-from qwen_lightning.ui import prompts  # noqa: E402
+from imagegen.ui import examples_spec as spec  # noqa: E402
+from imagegen.ui import prompts  # noqa: E402
 
 DEFAULT_URL = "http://localhost:7860/"
 
@@ -35,7 +43,7 @@ def _run(client: Client, tab: str, index: int, **kwargs) -> float:
     target = spec.output_path(tab, index)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(result, target)
-    print(f"  [{tab} {index+1}] {elapsed:5.1f}s -> {target.name} | {status}")
+    print(f"  [{tab} {index + 1}] {elapsed:5.1f}s -> {target.name} | {status}")
     return elapsed
 
 
@@ -49,18 +57,28 @@ def main() -> None:
     print(">>> Tab 1 — Virtual Try-On")
     for i, (garment, person) in enumerate(spec.VTO_CASES):
         total += _run(
-            client, "vto", i,
+            client,
+            "vto",
+            i,
             garment=handle_file(str(spec.image_path(garment))),
             person=handle_file(str(spec.image_path(person))),
-            note="", seed=1000 + i, api_name="/on_vto", **common,
+            note="",
+            seed=1000 + i,
+            api_name="/on_vto",
+            **common,
         )
 
     print(">>> Tab 2 — Home Design")
     for i, (room, design) in enumerate(spec.HOME_CASES):
         total += _run(
-            client, "home", i,
+            client,
+            "home",
+            i,
             room=handle_file(str(spec.image_path(room))),
-            design=design, seed=2000 + i, api_name="/on_home", **common,
+            design=design,
+            seed=2000 + i,
+            api_name="/on_home",
+            **common,
         )
 
     print(">>> Tab 3 — Image to Cartoon")
@@ -68,19 +86,29 @@ def main() -> None:
     # prompt trong UI — nên ở đây phải truyền thẳng prompt của phong cách đó.
     for i, (photo, style) in enumerate(spec.CARTOON_CASES):
         total += _run(
-            client, "cartoon", i,
+            client,
+            "cartoon",
+            i,
             photo=handle_file(str(spec.image_path(photo))),
             prompt_text=prompts.build_cartoon_prompt(style),
-            note="", seed=3000 + i, api_name="/on_cartoon", **common,
+            note="",
+            seed=3000 + i,
+            api_name="/on_cartoon",
+            **common,
         )
 
     print(">>> Tab 4 — Ghép 2 người ôm nhau")
     for i, (person_a, person_b) in enumerate(spec.HUG_CASES):
         total += _run(
-            client, "hug", i,
+            client,
+            "hug",
+            i,
             person_a=handle_file(str(spec.image_path(person_a))),
             person_b=handle_file(str(spec.image_path(person_b))),
-            note="", seed=4000 + i, api_name="/on_hug", **common,
+            note="",
+            seed=4000 + i,
+            api_name="/on_hug",
+            **common,
         )
 
     print(">>> Tab 5 — Face Swap")
@@ -88,11 +116,16 @@ def main() -> None:
     # phải tham số endpoint, nên truyền thẳng prompt của phạm vi đó.
     for i, (face, photo, scope) in enumerate(spec.FACESWAP_CASES):
         total += _run(
-            client, "faceswap", i,
+            client,
+            "faceswap",
+            i,
             face=handle_file(str(spec.image_path(face))),
             photo=handle_file(str(spec.image_path(photo))),
             prompt_text=prompts.build_faceswap_prompt(scope),
-            note="", seed=5000 + i, api_name="/on_faceswap", **common,
+            note="",
+            seed=5000 + i,
+            api_name="/on_faceswap",
+            **common,
         )
 
     print(f">>> Xong. Tổng {total:.1f}s, ảnh nằm ở {spec.OUTPUTS_DIR}")
