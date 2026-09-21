@@ -5,18 +5,18 @@
 # ║  Khác base.yaml đúng 2 chỗ:                                          ║
 # ║    processor.type: echo   → không nạp model, không cần GPU/weight     ║
 # ║    storage.backend: local → không cần key GCS                        ║
-# ║  Phần rabbitmq để trống, nạp từ IMG_RMQ_* lúc chạy (xem loader.py).   ║
+# ║  Phần rabbitmq để trống, nạp từ GENIMG_RMQ_* lúc chạy (loader.py).   ║
 # ║                                                                      ║
-# ║  Dùng để làm gì: kiểm tra TRƯỚC khi thuê GPU rằng container thật sự  ║
-# ║  consume 4 inbound queue và đẩy reply sang queue_out. Nếu smoke pass  ║
-# ║  mà bản thật im lặng thì lỗi nằm ở model/GPU, không phải ở queue.     ║
+# ║  Dùng để làm gì: kiểm tra TRƯỚC khi thuê GPU rằng container thật    ║
+# ║  sự consume 4 inbound queue và đẩy reply sang queue_out. Nếu smoke   ║
+# ║  pass mà bản thật im lặng thì lỗi ở model/GPU, không phải ở queue.    ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 service_version: "v0.1.0-smoke"
 
 rabbitmq:
-  # Điền qua env: IMG_RMQ_HOST / IMG_RMQ_PORT / IMG_RMQ_USER /
-  # IMG_RMQ_PASSWORD / IMG_RMQ_VHOST. Để trống ở đây để file không bao giờ
+  # Điền qua env: GENIMG_RMQ_HOST / GENIMG_RMQ_PORT / GENIMG_RMQ_USER /
+  # GENIMG_RMQ_PASSWORD / GENIMG_RMQ_VHOST. Để trống ở đây để file không bao giờ
   # mang secret.
   host: ""
   port: 5672
@@ -49,10 +49,8 @@ storage:
 
 processor:
   type: "echo"                      # ← không nạp model
-  num_steps: 50
-  # Ảnh placeholder không cần to; echo tự cắp về tối đa 512px.
-  width: 2048
-  height: 2048
+  num_steps: 4
+  output_area: 262144               # 512² — ảnh placeholder không cần to
   warmup: false
 
 worker:
