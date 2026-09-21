@@ -1,10 +1,10 @@
 # Queue worker service (RabbitMQ)
 
 Service consumer chạy nền: nhận request sinh/sửa ảnh từ RabbitMQ, chạy pipeline
-HiDream-O1-Image (SDNQ 4-bit), upload kết quả lên GCS và publish URL trả về.
+FLUX.2-klein-4B, upload kết quả lên GCS và publish URL trả về.
 Kiến trúc mirror service `edit_any_image`.
 
-Package: `src/imagegen/queue_service/`. Entry point: `main_queue.py`.
+Package: `src/gen_image/queue_service/`. Entry point: `main_queue.py`.
 Config: **một file duy nhất** `config_setup/base.yaml` (giống `edit_any_image`).
 
 ## Chạy
@@ -29,7 +29,7 @@ python main_queue.py
 
 # Docker (dùng chung image với Gradio, entrypoint riêng). Compose mount
 # ./config_setup từ host, nên base.yaml + credentials phải có sẵn trên host:
-docker compose --profile queue up imagegen-queue
+docker compose up -d gen-image-queue
 ```
 
 > **Lưu ý bảo mật:** `config_setup/base.yaml` và `config_setup/credentials/*.json`
@@ -67,40 +67,62 @@ fair distribution multi-container). `prefetch_count: 0` → auto-tune theo
 `retry_max_attempts: 0` (canonical): mọi lỗi DLQ ngay, không loop. AI reply vẫn
 đi về BE qua `queue_out`; BE re-publish thủ công nếu cần.
 
+## ⚠️ Retry: đi dây đầy đủ nhưng ĐANG TẮT
+
+Đọc mục này trước khi bạn mất một buổi truy vì sao vài hàm không ai gọi.
+
+Topology retry **có được dựng thật** (`topology.py`: queue `.retry` với
+`x-message-ttl = retry_initial_delay_ms`, DLX trỏ về exchange chính). Nhưng
+quyết định *định tuyến* thì hard-code: `AIWorker._route_failure` đẩy mọi
+failure thẳng vào DLQ, không bao giờ đi qua đường retry.
+
+Hệ quả — bốn thứ dưới đây **tồn tại nhưng không được gọi**, và đó là có chủ
+đích, không phải bỏ sót:
+
+| Thứ | Ở đâu | Sống lại khi nào |
+|---|---|---|
+| `should_retry()` | `messaging/retry.py` | `_route_failure` gọi nó |
+| `compute_backoff_ms()` | `messaging/retry.py` | dùng backoff luỹ thừa |
+| `Envelope.retry()` | `messaging/envelope.py` | `_route_failure` chọn nhánh retry |
+| `BrokerHealthMonitor.is_alive_now()` | `messaging/broker_health.py` | ai đó cần đọc trạng thái thay vì nhận callback |
+
+`attempts_so_far()` thì **đang được dùng** (`ai_worker.py` đọc header
+`x-death` để ghi số lần thử vào audit) — đừng xoá nhầm nó cùng nhóm trên.
+
+**Muốn bật retry:** đặt `retry_max_attempts > 0` là CHƯA đủ. Phải sửa
+`_route_failure` để gọi `should_retry()` rồi `envelope.retry()`, **và** rà lại
+classifier trong `messaging/status.py` cho chắc mọi lỗi PERMANENT (4xx từ GCS,
+input hỏng) không lọt vào vòng lặp retry vô ích.
+
 ### `storage`
 
 Multi-backend list. Inbound `storage_index` (int) chọn entry, default
 `default_index`. `cdn_base_url` rỗng → signed URL của bucket; có giá trị → URL
 CDN public `{cdn_base_url}/{object_key}`.
 
-### `processor` (HiDream-O1-Image inference)
+### `processor` (FLUX.2 inference)
 
-Map thẳng vào `imagegen.config.Settings` khi nạp model — dùng chung
-`imagegen.hidream.load_model`, không copy logic:
+Map thẳng vào `gen_image.config.Settings` khi nạp pipeline — dùng chung
+`models.loader.load_pipeline`, không copy logic:
 
 | field | mặc định | ý nghĩa |
 |-------|----------|---------|
-| `type` | `hidream_o1` | `hidream_o1` \| `echo` (smoke test, không nạp model) |
-| `model_type` | `full` | `full` (50 bước) / `dev` (28 bước, nhanh ~3.5×) |
-| `num_steps` | 50 | 50 cho full, 28 cho dev |
-| `guidance_scale` | 5.0 | **> 1.0 nhân đôi số forward pass.** 0.0 cho dev |
-| `shift` | 3.0 | độ lệch lịch nhiễu; 1.0 cho dev |
-| `scheduler_name` | `default` | `default` \| `flow_match` \| `flash` |
-| `width` / `height` | 2048 | chỉ chọn **tỉ lệ** — xem cảnh báo dưới |
-| `model_path` | "" | rỗng → theo `IMG_MODEL_PATH` / `.model_paths.env` |
+| `type` | `flux2_klein` | `flux2_klein` / `echo` (smoke test, không nạp model) |
+| `num_steps` | 4 | bản distilled được chưng cất về đúng 4 bước |
+| `quantization` | `bf16` | `bf16` (mặc định) / `gguf` — xem ADR 0001 §3 |
+| `compile_transformer` | false | `torch.compile`; chỉ có tác dụng ở nhánh bf16 |
+| `offload` | `resident` | `resident` / `model_offload` (đường lùi khi thiếu VRAM) |
+| `guidance_scale` | 1.0 | giá trị model card; bản distilled KHÔNG chạy CFG |
 | `device` | "" | rỗng → auto (cuda:1 nếu ≥2 GPU) |
+| `output_area` | 1048576 | diện tích ảnh ra (1024²) |
+| `max_input_dimension` | 1280 | trần mỗi chiều của ảnh tham chiếu (chỉ thu, không phóng) |
+| `base_model_local` | "" | rỗng → tải từ Hub; đặt path để đọc weight đã có trên đĩa |
+| `transformer_gguf` | "" | path file `.gguf`; chỉ đọc khi `quantization: gguf` |
 | `warmup` | true | trả trước chi phí lượt đầu lúc startup |
 
-> **`width`/`height` không chọn được kích thước.** Model snap mọi yêu cầu về
-> một trong 11 độ phân giải cố định, nhỏ nhất 2048×2048. Đặt 1024 không cho
-> ảnh 1024 — nó vẫn ra 2048, chỉ đổi tỉ lệ khung. Không có đòn bẩy nào để
-> sinh ảnh nhỏ hơn cho nhanh.
-
-> **`avg_inference_seconds` của khối `rabbitmq` phải khớp số đo thật.**
-> 50 bước × 2 forward pass (CFG) ở 2048² chậm hơn model cũ một bậc độ lớn.
-> Chạy `scripts/benchmark.py` — nó in ra đúng giá trị cần điền. Để nguyên
-> giá trị của model cũ thì `effective_prefetch()` cho consumer ôm quá nhiều
-> message và backlog phình ra.
+⚠️ `negative_prompt` trong inbound message vẫn được nhận (hợp đồng không
+đổi) nhưng **không có tác dụng** với bản distilled: guidance được nhúng vào
+model thay vì chạy CFG hai nhánh. Service ghi log khi bỏ qua.
 
 ## Message schema
 
@@ -109,34 +131,26 @@ Map thẳng vào `imagegen.config.Settings` khi nạp model — dùng chung
 ```jsonc
 {
   "_id": "req-123",              // bắt buộc, request id (idempotency key)
-  "os": "android",              // bắt buộc, android|ios
-  "firebase_token": "…",        // bắt buộc (để BE push kết quả)
+  "os": "android",              // bắt buộc field (type str), giá trị tự do — android|ios|"" đều hợp lệ, giá trị lạ fallback "unknown" khi đặt tên file GCS
+  "firebase_token": "…",        // bắt buộc field (type str), "" hợp lệ — chỉ echo lại, BE dùng để push kết quả nên rỗng = user không nhận được thông báo (không phải lỗi ở service này)
   "appid": "com.example.app",   // bắt buộc
   "country": "VN",              // optional
-  "device_id": "abc",           // bắt buộc
-  "prompt": "a cat astronaut",  // bắt buộc
+  "device_id": "abc",           // bắt buộc field (type str), giá trị tự do — "" hợp lệ, fallback "unknown-device" khi đặt tên file GCS
+  "prompt": "a cat astronaut",  // bắt buộc field (type str), "" hợp lệ — đi thẳng vào text encoder, không crash nhưng ra ảnh không theo hướng dẫn nào
 
-  // Ảnh điều kiện — OPTIONAL. Có → editing; không → text-to-image.
-  // HiDream-O1 khuyến nghị ĐÚNG MỘT ảnh cho editing (khi đó ảnh ra giữ khung
-  // của ảnh vào). Nhiều ảnh vẫn chạy nhưng là đường subject-driven khác.
-  "images": ["https://…/base.png"],
+  // Ảnh điều kiện — OPTIONAL. Có → image-edit; không → text-to-image.
+  // Ảnh CUỐI là ảnh nền (lấy tỉ lệ + là ảnh chính); ảnh trước là reference.
+  "images": ["https://…/ref.png", "https://…/base.png"],
   // "image": "https://…/one.png"  // alias 1 ảnh cũng chấp nhận
 
-  "negative_prompt": "",        // ⚠️ KHÔNG CÒN TÁC DỤNG — xem ghi chú
+  "negative_prompt": "",        // optional; KHÔNG có tác dụng với bản distilled (không chạy CFG)
   "seed": 42,                   // optional; <0 → random
   "num_steps": 0,               // optional; 0 → dùng default processor
-  "aspect_ratio": 1.0,          // optional; chỉ chọn TỈ LỆ — xem ghi chú
-  "match_input_size": 0,        // optional; 1 → resize ảnh ra = ảnh vào
+  "aspect_ratio": 1.0,          // optional; chỉ cho text-to-image
+  "match_input_size": 0,        // optional; 1 → resize ảnh ra = ảnh nền
   "storage_index": 0            // optional; chọn backend upload
 }
 ```
-
-**Hai field BE vẫn gửi được nhưng không còn tác dụng như trước:**
-
-| field | trạng thái |
-| :-- | :-- |
-| `negative_prompt` | **Bị bỏ qua.** HiDream-O1 không nhận negative prompt — nhánh uncond của CFG dùng prompt `" "` cố định. Giữ trong schema để BE/App không phải đổi payload; processor log ở mức debug rồi bỏ. |
-| `aspect_ratio` | Chỉ chọn **tỉ lệ khung**, không chọn kích thước. Giá trị được ánh xạ sang độ phân giải gần nhất trong 11 giá trị cố định (nhỏ nhất 2048×2048). |
 
 ### Outbound (queue ra)
 
