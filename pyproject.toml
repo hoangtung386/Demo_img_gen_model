@@ -1,49 +1,32 @@
 [project]
-name = "hidream-o1-image-service"
+name = "gen-image-flux2-klein"
 version = "0.2.0"
-description = "Gradio demo + RabbitMQ worker cho HiDream-O1-Image (SDNQ 4-bit)"
+description = "FLUX.2-klein-4B image generation service (RabbitMQ worker + Gradio demo)"
 readme = "README.md"
-# Chặn trên < 3.14: torch và gradio chỉ dựng wheel tới cp313. Nâng trần
-# thì phải kiểm tra lại cả hai, không chỉ đổi số ở đây.
+# Trần < 3.14 giữ lại cho torch: bánh xe torch 2.9.0 chỉ dựng tới cp313.
+# (Trần này KHÔNG còn liên quan tới nunchaku — package đó đã bị gỡ hẳn.)
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    # 6.17.3 là bản gradio MỚI NHẤT còn cho phép huggingface-hub < 1.0.
-    # Từ 6.18 trở đi gradio yêu cầu hub >= 1.2, xung đột cứng với
-    # transformers 4.57.1 (hub < 1.0) — mà transformers thì không nâng được,
-    # vì code vendor của HiDream bám vào internals 4.57 (masking_utils,
-    # modeling_layers, models.qwen3_vl.configuration_qwen3_vl...).
-    # Giữa "vỏ demo cũ hơn" và "chạy modeling code chưa test", chọn vế đầu.
-    # Nâng gradio thì phải xử lý xung đột này trước, đừng chỉ đổi số.
-    "gradio==6.17.3",
-    # torch >= 2.10 là yêu cầu của HiDream-O1-Image. README của họ nói rõ
-    # KHÔNG nên dùng 2.9.x: https://github.com/QwenLM/Qwen3-VL/issues/1811
-    # (bản 2.9 sai kết quả ở đường Qwen3-VL mà model này dựa vào).
-    "torch>=2.10",
-    "torchvision",
-    # 4.57.1 là bản HiDream ghim trong requirements.txt của họ.
-    # hidream/vendor/qwen3_vl_transformers.py là bản copy-sửa của modeling
-    # code Qwen3-VL nên bám vào nội bộ transformers — ĐỪNG nâng lên 5.x mà
-    # chưa chạy lại spike (docs/MIGRATION_HIDREAM_O1.md §2.2).
-    "transformers==4.57.1",
-    # Chỉ dùng cho FlowMatchEulerDiscreteScheduler + ConfigMixin mà hai
-    # scheduler trong hidream/vendor/ kế thừa. Không có pipeline diffusers
-    # nào được nạp nữa.
-    "diffusers>=0.36.0",
-    # Quantizer SDNQ. `import sdnq` đăng ký quant_method="sdnq" vào
-    # transformers — thiếu nó thì config.json của model đọc vào báo
-    # "Unknown quantization type". Xem hidream/loader.py.
-    "sdnq>=0.2.6",
-    "accelerate",
-    "einops",
-    "scipy",
-    "numpy",
-    "tqdm",
-    # < 1.0: transformers 4.57.1 chưa hỗ trợ hub 1.x. Ghim tường minh để
-    # `uv lock` fail ngay nếu ai đó nâng gradio/transformers lệch nhau.
-    "huggingface-hub>=0.34.0,<1.0",
+    "gradio==6.24.0",
+    "torch==2.9.0",
+    # Flux2KleinPipeline xuất hiện từ 0.37; ghim dải 0.40.x vì đó là bản đã
+    # kiểm: `image=` optional, `max_sequence_length=512`, `is_distilled` đọc
+    # từ model_index.json, và from_single_file chấp nhận `config=`+`subfolder=`
+    # (đường né diffusers#13001 — xem models/loader.py).
+    "diffusers>=0.40.0,<0.41",
+    # Qwen3ForCausalLM (text encoder của klein) + Qwen2TokenizerFast.
+    "transformers==5.15.0",
+    # Dùng tường minh trong models/placement.py (enable_model_cpu_offload là
+    # đường lùi khi OOM). Trước đây package này vào máy nhờ diffusers kéo
+    # theo — một dependency ngầm, hỏng ngay khi diffusers đổi ý.
+    "accelerate>=1.0",
+    # Chỉ cần cho nhánh quantization="gguf". Nhẹ (thuần Python), giữ trong
+    # nhóm mặc định để một image duy nhất chạy được cả hai nhánh.
+    "gguf>=0.10",
+    "huggingface-hub==1.27.0",
     "python-dotenv==1.2.2",
     "pillow==12.3.0",
-    # --- Queue-worker service (imagegen.queue_service) -------------------
+    # --- Queue-worker service (gen_image.queue_service) -------------------
     # Gộp vào nhóm mặc định để MỘT image duy nhất chạy được cả Gradio demo
     # lẫn RabbitMQ consumer (main_queue.py). Các package này nhẹ, không kéo
     # theo CUDA/torch.
@@ -59,29 +42,42 @@ dev = [
     "ruff==0.16.3",
     "pytest==9.1.1",
 ]
+# Chỉ cần cho `quantization: "fp8"` — một nhánh CHƯA ĐƯỢC ĐO (xem
+# models/loader.py::_load_fp8_transformer). Để ngoài nhóm mặc định nên image
+# production không mang theo một dependency chưa ai chứng minh là có lợi;
+# cài thêm khi muốn so FP8 với bf16 trên L4:
+#     uv sync --extra fp8 && python scripts/spike_flux2.py --modes bf16 fp8
+fp8 = [
+    "optimum-quanto>=0.2.6",
+]
 
 [project.scripts]
-download-model = "imagegen.download:main"
-run-app = "imagegen.serve:main"
-run-queue = "imagegen.queue_service.app:_cli"
+download-model = "gen_image.download:main"
+run-app = "gen_image.serve:main"
+run-queue = "gen_image.queue_service.app:_cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/imagegen"]
+packages = ["src/gen_image"]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 79
+# 88 = mặc định của ruff/Black. Trước đây khai 79 nhưng chưa bao giờ được
+# enforce: `queue_service/` và `scripts/` vốn đã viết ở ~88, và 313 lỗi E501
+# tồn đọng khiến `ruff check` luôn đỏ — tức là không ai chạy được nó, tức là
+# nó không bảo vệ gì cả. Hạ chuẩn xuống đúng thực tế rồi giữ nó XANH có giá
+# trị hơn một con số đẹp mà cả repo phải phớt lờ.
+line-length = 88
 target-version = "py310"
-# Code bên thứ ba, giữ nguyên dạng upstream để lần cập nhật sau còn diff
-# được. Các patch của dự án được đánh dấu `# PATCH <n>` và ghi ở VENDOR.md.
-extend-exclude = ["src/imagegen/hidream/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C4"]

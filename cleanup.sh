@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# cleanup.sh — giải phóng VRAM và cổng mà demo HiDream-O1-Image đang chiếm giữ.
+# cleanup.sh — giải phóng VRAM và cổng mà demo FLUX.2-klein đang chiếm giữ.
 # Dọn cả hai kiểu chạy: container Docker của dự án, và tiến trình chạy trực
-# tiếp trên host (nhận diện qua cổng IMG_PORT). Không ảnh hưởng tiến trình khác.
+# tiếp trên host (nhận diện qua cổng GENIMG_PORT). Không ảnh hưởng tiến trình khác.
 set -u
 
 # Chạy được từ bất kỳ đâu: `docker compose` cần đúng thư mục có
 # docker-compose.yml, và .env cũng được đọc theo đường dẫn tương đối.
 cd "$(dirname "$0")" || exit 1
 
-PORT="${IMG_PORT:-7860}"
-# Đọc cổng: env IMG_PORT thắng, rồi .env (IMG_PORT=...), cuối cùng
+PORT="${GENIMG_PORT:-7860}"
+# Đọc cổng: env GENIMG_PORT thắng, rồi .env (GENIMG_PORT=...), cuối cùng
 # config_setup/base.yaml (app.server_port) — nguồn config duy nhất.
-if [ -z "${IMG_PORT:-}" ] && [ -f .env ]; then
-    _env_port="$(grep -E '^IMG_PORT=' .env | head -n1 | cut -d= -f2- \
+if [ -z "${GENIMG_PORT:-}" ] && [ -f .env ]; then
+    _env_port="$(grep -E '^GENIMG_PORT=' .env | head -n1 | cut -d= -f2- \
         | cut -d'#' -f1 | tr -d ' \r')"
     [ -n "$_env_port" ] && PORT="$_env_port"
 fi
-if [ -z "${IMG_PORT:-}" ] && [ "$PORT" = "7860" ] && [ -f config_setup/base.yaml ]; then
+if [ -z "${GENIMG_PORT:-}" ] && [ "$PORT" = "7860" ] && [ -f config_setup/base.yaml ]; then
     # Lấy server_port trong khối app: (dòng thụt lề dưới `app:`).
     _yaml_port="$(awk '/^app:/{a=1;next} /^[a-zA-Z]/{a=0} a&&/^[[:space:]]+server_port:/{gsub(/[^0-9]/,"");print;exit}' config_setup/base.yaml)"
     [ -n "$_yaml_port" ] && PORT="$_yaml_port"
@@ -70,7 +70,7 @@ if [ -n "${PID// }" ]; then
         kill -9 $PID 2>/dev/null || true
     fi
     echo ">>> Đã dừng tiến trình. VRAM và cổng $PORT đã được giải phóng."
-    # IMG_SHARE=true khiến Gradio chạy kèm tiến trình tunnel `frpc`. Bị SIGKILL
+    # GENIMG_SHARE=true khiến Gradio chạy kèm tiến trình tunnel `frpc`. Bị SIGKILL
     # theo tiến trình cha thì frpc thành mồ côi và vẫn giữ link share cũ.
     # Lọc theo `-l $PORT`: máy có thể đang chạy demo Gradio khác, kill hết
     # `frpc` sẽ ngắt luôn tunnel của họ.

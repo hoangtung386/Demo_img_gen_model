@@ -1,9 +1,9 @@
-# Trọng số ~10GB — mount volume lúc chạy, tuyệt đối không đưa vào build
+# Trọng số 65GB — mount volume lúc chạy, tuyệt đối không đưa vào build
 # context (docker sẽ gửi toàn bộ context cho daemon trước khi build).
 models/
 
 # Đường dẫn tuyệt đối của HOST, vô nghĩa trong container. Compose set
-# IMG_MODEL_PATH trỏ vào chỗ mount thay cho nó.
+# GENIMG_BASE_MODEL_LOCAL / GENIMG_TRANSFORMER_PATH trỏ vào chỗ mount thay cho nó.
 .model_paths.env
 
 # Secret: HF_TOKEN được nạp lúc chạy qua env_file, không bake vào image.
@@ -41,10 +41,10 @@ tests/
 
 # Queue service: bake config_setup/ (chỉ base.example.yaml) NHƯNG không bake
 # secret — base.yaml + key thật inject qua volume mount lúc chạy (xem
-# docker-compose imagegen-queue).
+# docker-compose gen-image-queue).
 config_setup/base.yaml
 config_setup/credentials/*.json
-# Ảnh mẫu demo: mount lúc chạy qua docker-compose (service imagegen)
+# Ảnh mẫu demo: mount lúc chạy qua docker-compose (service gen-image)
 # chứ không bake, nên không cần nằm trong build context.
 examples/
 

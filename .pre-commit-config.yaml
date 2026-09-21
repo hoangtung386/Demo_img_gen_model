@@ -1,5 +1,7 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
+    # PHẢI khớp ruff trong pyproject.toml [dev] — hai phiên bản khác
+    # nhau sẽ cho kết quả khác nhau giữa máy lập trình viên và hook.
     rev: v0.16.3
     hooks:
       - id: ruff
