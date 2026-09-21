@@ -23,7 +23,7 @@ import time
 
 import gradio as gr
 
-from ..inference import DEFAULT_OUTPUT_AREA, generate
+from ..inference import DEFAULT_OUTPUT_AREA, DEFAULT_REFERENCE_AREA, generate
 from . import examples_spec as spec
 from . import prompts
 from .demo_cache import build_index, cache_key, sample_image, serve_cached
@@ -43,6 +43,7 @@ def build_ui(
     pipeline,
     num_steps: int,
     demo_cache: bool = True,
+    reference_area: int = DEFAULT_REFERENCE_AREA,
 ) -> gr.Blocks:
     """Build and return the Gradio Blocks interface.
 
@@ -82,6 +83,7 @@ def build_ui(
             negative,
             OUTPUT_PRESETS.get(res, DEFAULT_OUTPUT_AREA),
             match_input_size=match_input_size,
+            reference_area=reference_area,
         )
 
     def _run_t2i(prompt_text, negative, cfg, seed, steps, res, ratio):

@@ -161,6 +161,7 @@ def _run_mode(pipeline, settings, mode: str, args):
             run,
             settings.num_steps,
             output_area=area,
+            reference_area=args.reference_area or settings.reference_area,
         )
         elapsed = time.time() - started
         timings.append(elapsed)
@@ -185,6 +186,16 @@ def main() -> int:
         choices=(*MODES, "all"),
         default="all",
         help="t2i | edit (1 ảnh) | edit2 (2 ảnh) | all",
+    )
+    parser.add_argument(
+        "--reference-area",
+        type=int,
+        default=None,
+        help=(
+            "Trần diện tích mỗi ảnh tham chiếu (pixel). Mặc định lấy từ "
+            "config. Thử 589824 (768²) hoặc 262144 (512²) ở --mode edit "
+            "để đo chi phí thật của ảnh tham chiếu."
+        ),
     )
     parser.add_argument(
         "--long-prompt",
@@ -230,6 +241,8 @@ def main() -> int:
     print(f"Độ phân giải     : ~{args.area}px")
     kind = "dài (~1800 ký tự, cỡ tab demo)" if args.long_prompt else "ngắn"
     print(f"Prompt           : {kind}")
+    ref = args.reference_area or settings.reference_area
+    print(f"Ảnh tham chiếu   : trần {ref} px (~{int(ref**0.5)}²)")
     print("-" * 62)
     print(f"Load model       : {load_s:.1f}s")
     print(f"Warm-up          : {warm_s:.1f}s")

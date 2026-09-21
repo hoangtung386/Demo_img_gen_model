@@ -52,6 +52,7 @@ def _to_model_settings(cfg: ProcessorConfig) -> ModelSettings:
         vae_tiling=cfg.vae_tiling,
         vae_slicing=cfg.vae_slicing,
         embed_cache_size=cfg.embed_cache_size,
+        reference_area=cfg.reference_area,
         model_root="models",
         base_model=DEFAULT_BASE_MODEL,
         gguf_repo=DEFAULT_GGUF_REPO,
@@ -125,4 +126,5 @@ class Flux2KleinGenerator(ImageGenerator):
             output_area=output_area,
             aspect_ratio=aspect_ratio,
             match_input_size=match_input_size,
+            reference_area=self.cfg.reference_area,
         )

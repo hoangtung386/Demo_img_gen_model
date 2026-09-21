@@ -142,6 +142,12 @@ class ProcessorConfig:
     vae_slicing: bool = False
     # Số prompt giữ trong cache embed. Vài MB/entry, nâng lên hàng trăm vẫn rẻ.
     embed_cache_size: int = 8
+    # Trần diện tích cho MỖI ảnh tham chiếu (pixel). Ảnh tham chiếu được
+    # VAE-encode thành latent token và NỐI vào chuỗi denoise, nên một ảnh
+    # 1024² thêm 4096 token vào mọi bước — bằng cả ảnh ra ở 1024². Hạ
+    # xuống 768²(589824)/512²(262144) là đòn bẩy tốc độ trực tiếp cho task
+    # image-edit, đổi lấy chi tiết lấy được từ ảnh tham chiếu.
+    reference_area: int = 1024 * 1024
     # torch.compile transformer. Mặc định TẮT — chỉ bật sau khi đã đo thật
     # trên đúng phần cứng đó (xem gen_image/tuning.py::maybe_compile).
     compile_transformer: bool = False

@@ -85,43 +85,64 @@ Ba kết luận đóng lại ba hướng:
 3. **§8 FP8: vẫn mở** — nhưng xem phần ngay dưới trước, vì hoá ra
    4.30s/bước KHÔNG phải do GGUF.
 
-### ✅ Đã giải: thủ phạm là ĐỘ DÀI PROMPT, không phải tầng service
+### ❌ Prompt dài KHÔNG phải thủ phạm (giả thuyết đã bị bác bỏ)
 
-Cùng L4, cùng GGUF Q4_K_M + NF4, cùng 1024²/4 bước:
+`benchmark.py --mode t2i --long-prompt`, prompt ~1800 ký tự:
+**10.75s median, denoise 2.50s/bước** — trùng khít prompt ngắn (10.82s,
+2.46s/bước). Text token tối đa 512, nhỏ so với 4096 image token, nên độ dài
+prompt gần như miễn phí.
 
-| Đường chạy | Prompt | Thời gian | denoise/bước |
-|---|---|---:|---:|
-| `spike_flux2.py` (pipeline trực tiếp) | ngắn | 10.97s | ~2.5s |
-| `benchmark.py` (**đường service**) | ngắn | **10.82s** | **2.46s** |
-| Gradio (đường service) | demo, ~1840 ký tự | **18.1s** | **4.30s** |
+Giả thuyết "prompt dài làm đắt mỗi bước" đã sai, và cả giả thuyết "tầng
+service tốn 7.7s" trước đó cũng sai (10.82s = 10.97s của spike).
 
-Hai dòng đầu **trùng nhau trong sai số**. Nên:
+### ✅ 0c. Thủ phạm thật: ẢNH THAM CHIẾU
 
-- **Tầng service KHÔNG tốn gì.** `generate()`, `callback_on_step_end`,
-  wrapper — tất cả cộng lại dưới 0.2s. Giả thuyết "callback đo đạc làm chậm
-  chính thứ đang đo" đã bị bác bỏ bằng số.
-- **Prompt dài là toàn bộ 7.7s.** +75% trên MỖI bước denoise.
+Số đo cùng một máy, cùng model:
 
-Vì sao đắt đến thế: FLUX.2 là MMDiT, text token và image token đi **chung**
-một chuỗi joint-attention ở **mọi bước**. Prompt dài không chỉ tốn thêm một
-lần lúc encode (`text` vẫn 0.0s nhờ cache) — nó làm nặng thêm từng bước
-denoise, 4 lần mỗi ảnh.
+| Kịch bản | Output | Ảnh tham chiếu | denoise/bước |
+|---|---|---|---:|
+| t2i | 1024² | không | **2.46s** |
+| t2i, prompt dài | 1024² | không | **2.50s** |
+| edit (warm-up) | 1024² | 1 ảnh | **2.91s** |
+| Gradio, tab demo | 1024² | nhiều ảnh | **4.30s** |
+| Gradio, tab demo | **704²** | nhiều ảnh | **3.32s** |
 
-> 💡 **Đây là đòn bẩy lớn nhất đo được trong dự án, và nó miễn phí.** Lớn
-> hơn FP8, lớn hơn `torch.compile`, lớn hơn TAEF2 — cộng lại. Prompt demo
-> trong `ui/prompts.py` chưa từng được tinh chỉnh cho FLUX.2 (chính
-> `docs/architecture.md` ghi "⚠️ chưa tinh chỉnh lại cho FLUX.2").
+Dòng cuối là dòng lộ ra tất cả: **ảnh ra NHỎ HƠN mà vẫn chậm hơn t2i ở
+1024²**. Không có cách nào giải thích bằng kích thước ảnh ra.
 
-Đo lại sau khi cắt prompt:
+Cơ chế: trong FLUX.2, ảnh tham chiếu không đi qua một nhánh riêng. Nó được
+VAE-encode thành latent token rồi **nối vào cùng chuỗi** với latent đang
+sinh, và cả chuỗi đi qua attention ở **mọi bước denoise**.
+
+| Kích thước | Số latent token |
+|---|---:|
+| ảnh ra 1024² | 4096 |
+| ảnh ra 704² | 1936 |
+| **mỗi ảnh tham chiếu 1024²** | **4096** |
+
+Nên ở 704² với một ảnh tham chiếu 1024², tham chiếu chiếm **68%** chuỗi.
+Thu nhỏ ảnh ra không chạm được vào phần đó.
+
+> 💡 **`reference_area` là knob tốc độ lớn nhất cho mọi task image-edit.**
+> Trước đây không có knob này: pipeline tự thu về trần cứng 1024² và không
+> nhận tham số, nên không ai chỉnh được. `inference._shrink_reference()`
+> thu TRƯỚC khi đưa vào pipeline.
+
+| `reference_area` | Token/ảnh tham chiếu | So với mặc định |
+|---|---:|---|
+| `1048576` (1024², mặc định) | 4096 | hành vi cũ |
+| `589824` (768²) | 2304 | −44% token tham chiếu |
+| `262144` (512²) | 1024 | −75% token tham chiếu |
 
 ```bash
-python scripts/benchmark.py --mode t2i                 # prompt ngắn
-python scripts/benchmark.py --mode t2i --long-prompt   # prompt cỡ tab demo
+python scripts/benchmark.py --mode edit                        # mặc định
+python scripts/benchmark.py --mode edit --reference-area 589824
+python scripts/benchmark.py --mode edit --reference-area 262144
 ```
 
-⚠️ Cắt prompt **đổi ảnh ra**, không phải một tối ưu trong suốt. Phải xem
-bằng mắt xem chất lượng có giữ được không — §4 của chính tài liệu này cảnh
-báo đừng đánh đổi mù.
+⚠️ Đổi lấy **chi tiết lấy được từ ảnh tham chiếu**. Với try-on (hoạ tiết vải)
+hay face-swap (đặc điểm khuôn mặt) thì đây là đánh đổi thật, phải xem ảnh.
+Với ảnh tham chiếu chỉ cung cấp bố cục/ánh sáng thì gần như miễn phí.
 
 ### 🔴 FP8 qua optimum-quanto: TRƯỢT
 
@@ -269,9 +290,14 @@ thật, không phải một cờ bật. Xem MULTI_PROCESS_WORKERS.md.
 `Float8DynamicActivationFloat8WeightConfig` — lượng tử hoá cả activation
 nên matmul chạy thật trên tensor core FP8 của Ada.
 
-> Backend cũ `optimum-quanto` đã **trượt** trên L4 ("A is not contiguous",
-> xem §0b) và bị diffusers deprecate. Giữ lại sau cờ `backend="quanto"` chỉ
-> để tái lập kết quả, đừng chọn.
+> Backend cũ `optimum-quanto` đã **trượt** trên L4 ("A is not contiguous")
+> và bị diffusers deprecate. Giữ lại sau cờ `backend="quanto"` chỉ để tái
+> lập kết quả, đừng chọn.
+>
+> 🔴 **torchao phải ghim `<0.16`.** Bản 0.18 import `ScalingType` từ
+> `torch.nn.functional` — chỉ có ở torch >= 2.11, còn dự án ghim torch 2.9.
+> Cài nhầm bản mới làm hỏng **cả nhánh gguf**, vì lỗi nổ lúc import
+> diffusers chứ không phải lúc dùng fp8.
 
 Đây là lựa chọn đáng thử nhất khi card còn dư VRAM, vì nó thắng GGUF ở
 **hai** điểm cùng lúc:
@@ -332,9 +358,9 @@ Lưu ý `Flux2KleinPipeline` **không có** `enable_vae_tiling()` ở cấp pipe
    §0. `text_encoder_quantization` là knob đầu tiên cần nhìn.
 1. **Đo trước.** `make benchmark` — đọc bảng tỉ trọng giai đoạn. Tối ưu thứ
    không phải nút cổ chai là tốn công vô ích.
-2. **Cắt ngắn prompt.** ĐÒN BẨY LỚN NHẤT đã đo: prompt demo dài làm mỗi
-   bước denoise đắt thêm **75%** (§0b). Miễn phí về mặt kỹ thuật, nhưng đổi
-   ảnh ra nên phải xem bằng mắt.
+2. **Hạ `reference_area`** (task image-edit). ĐÒN BẨY LỚN NHẤT đã đo:
+   ảnh tham chiếu 1024² thêm 4096 token vào MỌI bước, bằng cả ảnh ra (§0c).
+   Cắt prompt thì KHÔNG giúp gì — đã đo, xem §0b.
 3. **Hạ `output_area`.** Chi phí denoise tỉ lệ với số token latent, tức với
    diện tích ảnh. 832² thay 1024² là đòn bẩy lớn thứ hai và không tốn gì.
 4. **Nếu `denoise` áp đảo và card còn dư VRAM → thử `fp8`** (§8). Đây là

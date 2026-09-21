@@ -86,8 +86,8 @@ python scripts/spike_flux2.py --modes fp8 --compile --runs 3
 | D | GGUF nhanh hơn hoặc bằng bf16 | ⬜ chưa đo | GGUF t2i: **10.82s** median, 13.7 GiB đỉnh |
 | E | `torch.compile` không recompile mỗi shape | ⬜ chưa đo | chỉ kiểm được ở nhánh fp8/bf16 |
 | F | Ảnh edit hợp lý bằng mắt | ⬜ chưa đo | ảnh t2i đã sinh, chưa ai xem |
-| G | FP8 nhanh hơn GGUF | ⬜ chưa đo | quanto TRƯỢT (bug kernel); torchao chưa chạy |
-| H | Vì sao service chậm hơn spike 75%? | ✅ **ĐÃ GIẢI** | không phải service — là **độ dài prompt** |
+| G | FP8 nhanh hơn GGUF | ⬜ chưa đo | quanto TRƯỢT (bug kernel); torchao 0.18 TRƯỢT (cần torch>=2.11) |
+| H | Vì sao service chậm hơn spike 75%? | ✅ **ĐÃ GIẢI** | không phải service, không phải prompt — là **ảnh tham chiếu** |
 
 **Peak VRAM đo được:** 13.81 GiB (GGUF Q4_K_M + text encoder NF4) trên L4
 22.5 GiB — khớp ước tính ~11.2 GiB weight cộng ~2.6 GiB activation.
@@ -96,18 +96,29 @@ python scripts/spike_flux2.py --modes fp8 --compile --runs 3
 ngắn): **10.82s median**, denoise 2.46s/bước — trùng spike (10.97s) trong
 sai số. Tầng service tốn dưới 0.2s.
 
-Toàn bộ 7.7s chênh lệch đến từ **prompt demo dài ~1840 ký tự**: FLUX.2 là
-MMDiT, text token đi chung chuỗi joint-attention với 4096 image token ở MỌI
-bước, nên prompt dài làm đắt thêm từng bước chứ không chỉ khâu encode.
-2.46s/bước → 4.30s/bước.
+Hai giả thuyết về 7.7s chênh lệch đã **bị bác bỏ bằng số**:
 
-Hệ quả cho ADR: **đòn bẩy hiệu năng lớn nhất của dự án không nằm ở lựa chọn
-lượng tử hoá mà ở `ui/prompts.py`** — phần chưa từng được tinh chỉnh lại
-cho FLUX.2.
+1. ~~Tầng service~~ — benchmark đi đúng đường service: 10.82s.
+2. ~~Prompt dài~~ — `--long-prompt` (~1800 ký tự): 10.75s, KHÔNG chênh.
 
-**Kết quả tiêu chí G** (FP8 qua optimum-quanto): TRƯỢT vì bug kernel
-(`RuntimeError: A is not contiguous`, Marlin FP8), không phải vì FP8. Backend
-đã chuyển sang torchao; chưa đo lại.
+Thủ phạm thật: **ảnh tham chiếu**. Ảnh tham chiếu được VAE-encode thành
+latent token và nối vào chuỗi denoise, nên một ảnh 1024² thêm 4096 token
+vào mọi bước — bằng cả ảnh ra ở 1024². Bằng chứng quyết định: Gradio sinh ở
+**704²** (1936 token ảnh ra) với ảnh tham chiếu vẫn **chậm hơn** t2i ở
+1024². Không có cách nào giải thích bằng kích thước ảnh ra.
+
+Hệ quả cho ADR: knob hiệu năng lớn nhất cho task image-edit là
+`reference_area` (thêm mới), không phải lựa chọn lượng tử hoá.
+
+**Kết quả tiêu chí G**: FP8 đã trượt HAI lần, cả hai đều vì toolchain chứ
+không phải vì FP8.
+
+1. `optimum-quanto`: `RuntimeError: A is not contiguous` trong kernel Marlin
+   FP8 ngay ở forward đầu. Bug của quanto; diffusers cũng đã deprecate nó.
+2. `torchao==0.18`: `cannot import name 'ScalingType' from
+   'torch.nn.functional'` — bản này cần torch >= 2.11, dự án ghim torch 2.9.
+   Nguy hiểm hơn: lỗi nổ lúc import diffusers nên nó làm hỏng **cả nhánh
+   gguf đang chạy tốt**. Đã ghim `torchao>=0.13,<0.16` trong extra `fp8`.
 
 **Nếu C trượt:** đặt `quantization: "bf16"` (đã là mặc định) và ghi rõ ở đây
 rằng nhánh GGUF không dùng được với phiên bản diffusers đang ghim. Không cần

@@ -29,6 +29,7 @@ def base_settings() -> Settings:
         vae_tiling=False,
         vae_slicing=False,
         embed_cache_size=8,
+        reference_area=1024 * 1024,
         model_root="models",
         base_model=DEFAULT_BASE_MODEL,
         gguf_repo=DEFAULT_GGUF_REPO,

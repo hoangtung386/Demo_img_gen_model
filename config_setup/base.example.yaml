@@ -154,6 +154,18 @@ processor:
   # denoise. 1.0 là giá trị của model card.
   guidance_scale: 1.0
   output_area: 1048576          # 1024*1024 — diện tích ảnh ra mặc định
+  # Trần diện tích cho MỖI ảnh tham chiếu. KNOB TỐC ĐỘ LỚN NHẤT của task
+  # image-edit: ảnh tham chiếu được VAE-encode thành latent token rồi NỐI
+  # vào chuỗi denoise, nên một ảnh 1024² thêm 4096 token vào MỌI bước —
+  # bằng đúng toàn bộ ảnh ra ở 1024². Hạ ảnh RA mà giữ nguyên tham chiếu
+  # thì gần như không nhanh hơn (đã đo: 704² + tham chiếu vẫn chậm hơn
+  # 1024² không tham chiếu).
+  #   1048576 = 1024² (mặc định, giữ hành vi cũ)
+  #    589824 =  768² (−44% token tham chiếu)
+  #    262144 =  512² (−75% token tham chiếu)
+  # Đổi lấy chi tiết lấy được từ ảnh tham chiếu — với try-on (hoạ tiết vải)
+  # hay face-swap thì phải xem ảnh trước khi hạ.
+  reference_area: 1048576
   # Trần pixel cho MỖI CHIỀU (width, height) của ảnh input tham chiếu. Vượt
   # trần KHÔNG bị từ chối — pipeline tự resize (giữ tỉ lệ, không phóng) về
   # khung này. Không ảnh hưởng VRAM/tốc độ GPU (Flux2KleinPipeline vốn đã tự
@@ -215,6 +227,9 @@ app:
   vae_tiling: false             # GENIMG_VAE_TILING
   vae_slicing: false            # GENIMG_VAE_SLICING
   embed_cache_size: 8           # GENIMG_EMBED_CACHE_SIZE
+  # GENIMG_REFERENCE_AREA — trần diện tích mỗi ảnh tham chiếu. Xem khối
+  # processor: ở trên để biết vì sao đây là knob tốc độ lớn nhất của edit.
+  reference_area: 1048576
   compile_transformer: false    # GENIMG_COMPILE
   device: ""                    # GENIMG_DEVICE — rỗng auto (cuda:1 nếu >=2 GPU)
   offload: "resident"           # GENIMG_OFFLOAD — resident | model_offload

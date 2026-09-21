@@ -189,3 +189,39 @@ def test_text_encoder_quantization_tolerates_whitespace_and_case():
     assert build_text_encoder_quant_config("  NF4 ").quant_backend == (
         "bitsandbytes_4bit"
     )
+
+
+# --------------------------------------------------------------------------
+# thu ảnh tham chiếu — xem inference._shrink_reference
+# --------------------------------------------------------------------------
+
+
+def test_shrink_reference_caps_area_and_keeps_ratio():
+    """Ảnh tham chiếu thành latent token nối vào chuỗi denoise mọi bước."""
+    from PIL import Image
+
+    from gen_image.inference import _shrink_reference
+
+    src = Image.new("RGB", (2048, 1024))
+    out = _shrink_reference(src, 512 * 512)
+
+    assert out.width * out.height <= 512 * 512
+    assert abs(out.width / out.height - 2.0) < 0.05
+
+
+def test_shrink_reference_never_upscales():
+    """Phóng to ảnh nhỏ chỉ thêm token rỗng — đắt hơn mà không thêm tin."""
+    from PIL import Image
+
+    from gen_image.inference import _shrink_reference
+
+    src = Image.new("RGB", (256, 256))
+    assert _shrink_reference(src, 1024 * 1024).size == (256, 256)
+
+
+def test_default_reference_area_preserves_current_behaviour():
+    """Mặc định phải trùng trần cứng của pipeline — đổi tốc độ phải là
+    một quyết định tường minh, không phải tác dụng phụ của một lần nâng cấp."""
+    from gen_image.inference import DEFAULT_REFERENCE_AREA
+
+    assert DEFAULT_REFERENCE_AREA == 1024 * 1024

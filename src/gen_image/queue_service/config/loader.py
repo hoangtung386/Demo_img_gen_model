@@ -214,6 +214,7 @@ def _build_settings(cfg: dict) -> Settings:
             vae_tiling=bool(proc.get("vae_tiling", False)),
             vae_slicing=bool(proc.get("vae_slicing", False)),
             embed_cache_size=int(proc.get("embed_cache_size", 8)),
+            reference_area=int(proc.get("reference_area", 1024 * 1024)),
             compile_transformer=bool(proc.get("compile_transformer", False)),
             offload=str(proc.get("offload", "resident")),
             guidance_scale=float(proc.get("guidance_scale", 1.0)),

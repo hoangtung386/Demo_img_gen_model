@@ -19,6 +19,24 @@ logger = logging.getLogger("gen-image")
 # chiếu xuống trước khi VAE-encode.
 DEFAULT_OUTPUT_AREA = 1024 * 1024
 
+# Diện tích TỐI ĐA cho mỗi ảnh THAM CHIẾU trước khi đưa vào pipeline.
+#
+# Đây là knob hiệu năng bị bỏ sót lâu nhất trong dự án. Trong FLUX.2, ảnh
+# tham chiếu KHÔNG đi qua một nhánh riêng: nó được VAE-encode thành latent
+# token rồi **nối vào cùng chuỗi** với latent của ảnh đang sinh, và cả chuỗi
+# đó đi qua attention ở MỌI bước denoise. Một ảnh tham chiếu 1024² thêm
+# 4096 token — bằng đúng toàn bộ ảnh ra ở 1024².
+#
+# Hệ quả phản trực giác, đã đo trên L4 (xem docs/PERFORMANCE.md §0c):
+# hạ độ phân giải ẢNH RA không giúp được bao nhiêu nếu ảnh tham chiếu vẫn
+# 1024². Sinh ở 704² (1936 token) với một ảnh tham chiếu 1024² (4096 token)
+# thì tham chiếu chiếm 68% chuỗi — ảnh ra nhỏ mà vẫn chậm hơn.
+#
+# 1024² là giá trị GIỮ NGUYÊN hành vi cũ (Flux2KleinPipeline vốn tự thu ảnh
+# tham chiếu xuống trần này). Hạ xuống 768²/512² là đòn bẩy tốc độ trực tiếp
+# cho mọi task image-edit, đổi lấy chi tiết lấy được từ ảnh tham chiếu.
+DEFAULT_REFERENCE_AREA = 1024 * 1024
+
 # FLUX.2 dùng max_sequence_length 512 (Qwen3-8B). Backend cũ truyền 1024 —
 # con số đó thuộc về Qwen2.5-VL và sẽ bị pipeline này cắt bớt.
 MAX_SEQUENCE_LENGTH = 512
@@ -202,6 +220,24 @@ def _negative_embeds(
     return embeds
 
 
+def _shrink_reference(image: Image.Image, max_area: int) -> Image.Image:
+    """Thu ảnh tham chiếu về ``max_area``, giữ tỉ lệ. KHÔNG bao giờ phóng to.
+
+    Thu ở ĐÂY chứ không để pipeline tự lo, vì pipeline chỉ thu xuống trần
+    cứng 1024² của nó — không nhận tham số. Mỗi pixel giữ lại ở đây là
+    latent token phải đi qua attention bốn lần.
+    """
+    width, height = image.size
+    area = width * height
+    if area <= max_area or area == 0:
+        return image
+    scale = math.sqrt(max_area / area)
+    return image.resize(
+        (max(1, int(width * scale)), max(1, int(height * scale))),
+        Image.LANCZOS,
+    )
+
+
 def generate(
     pipeline,
     images: list[Any] | None,
@@ -213,6 +249,7 @@ def generate(
     output_area: int = DEFAULT_OUTPUT_AREA,
     aspect_ratio: float = 1.0,
     match_input_size: bool = False,
+    reference_area: int = DEFAULT_REFERENCE_AREA,
 ) -> tuple[Image.Image | None, str]:
     """Chạy pipeline và trả ``(ảnh, thông điệp trạng thái)``.
 
@@ -238,10 +275,17 @@ def generate(
         return None, "Vui lòng nhập prompt."
 
     pil_images = [_to_pil(img) for img in (images or []) if img is not None]
+    # Tỉ lệ khung ảnh ra lấy TRƯỚC khi thu: thu giữ nguyên tỉ lệ, nhưng làm
+    # tròn pixel có thể lệch tỉ lệ một chút và ta không muốn khung ảnh ra
+    # phụ thuộc vào một chi tiết làm tròn.
+    if pil_images:
+        base_w, base_h = pil_images[-1].size
+        pil_images = [_shrink_reference(img, reference_area) for img in pil_images]
+        shrunk = [f"{i.width}x{i.height}" for i in pil_images]
+        logger.info("Ảnh tham chiếu sau khi thu: %s", ", ".join(shrunk))
 
     multiple_of = _pipeline_multiple_of(pipeline)
     if pil_images:
-        base_w, base_h = pil_images[-1].size
         ratio = base_w / base_h
     else:
         base_w = base_h = 0

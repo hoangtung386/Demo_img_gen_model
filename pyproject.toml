@@ -57,7 +57,14 @@ fp8 = [
     # torchao là backend FP8 CHÍNH. Float8DynamicActivationFloat8WeightConfig
     # lượng tử hoá cả activation nên matmul chạy thật trên tensor core FP8
     # của Ada (sm_89).
-    "torchao>=0.9",
+    # TRẦN PHIÊN BẢN LÀ BẮT BUỘC, không phải phòng xa. torchao 0.18 import
+    # `ScalingType` từ `torch.nn.functional` — chỉ có ở torch >= 2.11, trong
+    # khi dự án ghim torch 2.9. Cài nhầm bản mới làm hỏng CẢ nhánh gguf, vì
+    # lỗi xảy ra lúc import diffusers chứ không phải lúc dùng fp8:
+    #     cannot import name 'ScalingType' from 'torch.nn.functional'
+    # Đo trên Colab L4 2026-09-21. Nâng trần này CÙNG LÚC với torch, không
+    # sớm hơn.
+    "torchao>=0.13,<0.16",
     # optimum-quanto: backend CŨ, giữ lại chỉ để tái lập kết quả đã đo.
     # Trên Colab L4 nó nổ "RuntimeError: A is not contiguous" trong kernel
     # Marlin FP8 ngay ở forward đầu tiên, và diffusers 0.40 đã deprecate cả

@@ -74,7 +74,12 @@ def main() -> None:
         )
     logger.info("Ready.")
 
-    demo = build_ui(pipeline, settings.num_steps, settings.demo_cache)
+    demo = build_ui(
+        pipeline,
+        settings.num_steps,
+        settings.demo_cache,
+        settings.reference_area,
+    )
     _launch_with_public_link(demo, settings)
 
 

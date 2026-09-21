@@ -62,6 +62,7 @@ class Settings:
     vae_tiling: bool
     vae_slicing: bool
     embed_cache_size: int
+    reference_area: int
     model_root: str
     base_model: str
     gguf_repo: str
@@ -245,6 +246,13 @@ def load_settings() -> Settings:
         ),
         embed_cache_size=_as_int(
             pick("GENIMG_EMBED_CACHE_SIZE", "embed_cache_size", 8), 8
+        ),
+        # Trần diện tích cho MỖI ảnh tham chiếu. Ảnh tham chiếu thành
+        # latent token nối vào cùng chuỗi denoise, nên đây là knob tốc độ
+        # trực tiếp cho mọi task image-edit — xem inference.py.
+        reference_area=_as_int(
+            pick("GENIMG_REFERENCE_AREA", "reference_area", 1024 * 1024),
+            1024 * 1024,
         ),
         model_root=str(pick("MODEL_ROOT", "model_root", "models")),
         base_model=str(pick("GENIMG_BASE_MODEL", "base_model", DEFAULT_BASE_MODEL)),
