@@ -23,6 +23,12 @@ dependencies = [
     # Chỉ cần cho nhánh quantization="gguf". Nhẹ (thuần Python), giữ trong
     # nhóm mặc định để một image duy nhất chạy được cả hai nhánh.
     "gguf>=0.10",
+    # Lượng tử hoá text encoder Qwen3-8B (text_encoder_quantization="nf4",
+    # MẶC ĐỊNH). Ở nhóm mặc định chứ không phải extra: không có nó thì cấu
+    # hình mặc định của service KHÔNG chạy được trên L4 24GB — 16.4 GiB text
+    # encoder bf16 cộng transformer là vượt VRAM. 0.45 là bản đầu tiên có
+    # kernel NF4 ổn định cho Ada/sm_89.
+    "bitsandbytes>=0.45",
     "huggingface-hub==1.27.0",
     "python-dotenv==1.2.2",
     "pillow==12.3.0",

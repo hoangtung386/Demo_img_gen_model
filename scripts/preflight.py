@@ -26,7 +26,15 @@ _GB = 1024**3
 
 # 9B GGUF Q4_K_M + các component nền phải vừa GPU 24GB. Vượt xa ngưỡng này
 # thường là do vô tình tải/nạp transformer BF16 thay cho GGUF.
-_EXPECTED_MAX_GB = 24.0
+#
+# Ngưỡng là 20, không phải 24: trên card 24GB, driver + CUDA context chiếm
+# vài trăm MB và lượt denoise ở 1024² còn cần chỗ cho activation. Weight
+# chạm 24 GB nghĩa là ĐÃ hỏng, cảnh báo lúc đó là quá muộn.
+_EXPECTED_MAX_GB = 20.0
+
+# Weight text encoder trên ĐĨA luôn là bf16; bitsandbytes nén lúc nạp. Tỉ lệ
+# co lại ước lượng (gồm cả phần không nén: embedding, layernorm, lm_head).
+_TEXT_ENCODER_VRAM_RATIO = {"bf16": 1.0, "int8": 0.53, "nf4": 0.31}
 
 
 def _fail(msg: str) -> None:
@@ -112,6 +120,7 @@ def main() -> int:
 
     ok = True
     total = 0
+    text_encoder_bytes = 0
 
     print(f"\n[1] Base pipeline: {settings.base_model_local}")
     if not settings.base_model_local:
@@ -151,6 +160,8 @@ def main() -> int:
                 passed, size = check_component(base, name)
                 ok = ok and passed
                 total += size
+                if name == "text_encoder":
+                    text_encoder_bytes = size
 
     print(f"\n[2] Transformer GGUF (quantization={settings.quantization})")
     if settings.quantization != "gguf":
@@ -168,12 +179,28 @@ def main() -> int:
             total += size
             _ok(f"{weights.name} — {size / _GB:.1f} GB")
 
+    # Text encoder Qwen3-8B nằm trên đĩa ở bf16 (~16.4 GB) nhưng được
+    # bitsandbytes nén NGAY LÚC NẠP, nên dung lượng đĩa KHÔNG bằng VRAM.
+    # Cộng thẳng hai con số lại là cách tự doạ mình bằng một số sai.
+    te_mode = settings.text_encoder_quantization
+    ratio = _TEXT_ENCODER_VRAM_RATIO.get(te_mode, 1.0)
+    vram = total - text_encoder_bytes + text_encoder_bytes * ratio
+
     print("\n" + "=" * 66)
-    print(f"Tổng weight sẽ nạp vào VRAM: {total / _GB:.1f} GB")
-    if total / _GB > _EXPECTED_MAX_GB:
+    print(f"Tổng weight trên đĩa        : {total / _GB:.1f} GB")
+    te_disk = text_encoder_bytes / _GB
+    te_vram = text_encoder_bytes * ratio / _GB
+    print(
+        f"Text encoder ({te_mode:<4})         : "
+        f"{te_disk:.1f} GB đĩa → ~{te_vram:.1f} GB VRAM"
+    )
+    print(f"Ước tính weight trong VRAM  : ~{vram / _GB:.1f} GB")
+    if vram / _GB > _EXPECTED_MAX_GB:
         _warn(
-            f"vượt {_EXPECTED_MAX_GB:.0f} GB — kiểm tra xem transformer "
-            "BF16 có bị tải/nạp thay vì file GGUF Q4_K_M hay không."
+            f"vượt {_EXPECTED_MAX_GB:.0f} GB — trên L4 24GB phần còn lại "
+            "không đủ cho activation. Hai nguyên nhân thường gặp: "
+            "text_encoder_quantization='bf16' (Qwen3-8B một mình đã 16.4 GB), "
+            "hoặc transformer BF16 bị nạp thay cho file GGUF Q4_K_M."
         )
     print(f"Chiến lược đặt model: {settings.offload}")
     print("=" * 66)

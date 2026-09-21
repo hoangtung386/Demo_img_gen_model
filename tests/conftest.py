@@ -24,6 +24,7 @@ def base_settings() -> Settings:
         num_steps=4,
         guidance_scale=1.0,
         quantization="gguf",
+        text_encoder_quantization="nf4",
         compile_transformer=False,
         vae_tiling=False,
         vae_slicing=False,

@@ -47,6 +47,7 @@ def _to_model_settings(cfg: ProcessorConfig) -> ModelSettings:
         num_steps=cfg.num_steps,
         guidance_scale=cfg.guidance_scale,
         quantization=cfg.quantization,
+        text_encoder_quantization=cfg.text_encoder_quantization,
         compile_transformer=cfg.compile_transformer,
         vae_tiling=cfg.vae_tiling,
         vae_slicing=cfg.vae_slicing,

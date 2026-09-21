@@ -1,7 +1,7 @@
 # Kiến Trúc Dự Án (Architecture)
 
 Tài liệu dành cho team tiếp nhận, mô tả trách nhiệm từng module và luồng dữ
-liệu của service sinh ảnh `FLUX.2-klein-4B`.
+liệu của service sinh ảnh `FLUX.2-klein-9B`.
 
 ## Nguyên tắc
 
@@ -67,9 +67,13 @@ scripts/download_model.py ──► gen_image.download.main
 
 Backend trước (Qwen-Image-Edit-2509) cần 26.4 GiB weight thường trú — không
 vừa L4 24GB — nên phải có 4 chiến lược offload và một hàm tự dò GPU để chọn.
-FLUX.2-klein-4B chỉ cần ~16 GiB (text encoder là Qwen3-4B **text-only**, không
-phải bản VL 15.4 GiB), vừa thoải mái, nên cả khối đó trở thành mã chết. Chi
-tiết: [adr/0001-flux2-klein-backend.md](adr/0001-flux2-klein-backend.md).
+FLUX.2-klein-9B cần ~11 GiB ở cấu hình mặc định (transformer GGUF Q4_K_M +
+text encoder Qwen3-8B NF4 + VAE), vừa thoải mái, nên cả khối đó trở thành mã
+chết. Lưu ý đó là con số **sau khi nén cả hai** component lớn: để text
+encoder ở bf16 thì tổng lên 22.6 GiB và không vừa. Chi tiết:
+[PERFORMANCE.md §0](PERFORMANCE.md) và
+[adr/0001-flux2-klein-backend.md](adr/0001-flux2-klein-backend.md) (ADR viết
+cho bản 4B, các con số trong đó đã bị bản 9B thay thế).
 
 ## Ranh giới `ui/app.py` ↔ `ui/launch.py`
 
@@ -88,8 +92,8 @@ Nguồn config duy nhất: `config_setup/base.yaml`.
 - Khối `processor:` → queue service. **KHÔNG đọc env `GENIMG_*`** — mọi giá
   trị phải nằm trong file.
 
-`base_model` phải là bản **distilled** (`FLUX.2-klein-4B`), không phải
-`FLUX.2-klein-base-4B`. `scripts/preflight.py` cảnh báo nếu `model_index.json`
+`base_model` phải là bản **distilled** (`FLUX.2-klein-9B`), không phải
+`FLUX.2-klein-base-9B`. `scripts/preflight.py` cảnh báo nếu `model_index.json`
 thiếu `is_distilled`.
 
 Tiền tố env cũ `QIE_*` **không còn tác dụng** — xem ADR §7.

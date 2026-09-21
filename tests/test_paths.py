@@ -131,3 +131,61 @@ def test_vae_options_applied_when_enabled(base_settings):
     _apply_vae_memory_options(pipe, settings)
     assert pipe.vae.tiling
     assert pipe.vae.slicing
+
+
+# --------------------------------------------------------------------------
+# lượng tử hoá text encoder (knob riêng, tách khỏi `quantization`)
+# --------------------------------------------------------------------------
+
+
+def test_text_encoder_quantizations_are_the_documented_three():
+    """Danh sách hợp lệ phải khớp base.example.yaml — sai chính tả fail-fast."""
+    from gen_image.models.loader import TEXT_ENCODER_QUANTIZATIONS
+
+    assert TEXT_ENCODER_QUANTIZATIONS == ("bf16", "nf4", "int8")
+
+
+def test_text_encoder_bf16_means_no_quantization_config():
+    """bf16 → None, tức không truyền quantization_config vào from_pretrained."""
+    from gen_image.models.loader import build_text_encoder_quant_config
+
+    assert build_text_encoder_quant_config("bf16") is None
+
+
+def test_text_encoder_nf4_quantizes_only_the_text_encoder():
+    """Rào chắn thật: transformer đã là GGUF, VAE nén sẽ ra artefact.
+
+    Nếu `components_to_quantize` lỡ bị mở rộng, bitsandbytes sẽ giẫm lên
+    transformer GGUF vừa dựng bằng from_single_file.
+    """
+    from gen_image.models.loader import build_text_encoder_quant_config
+
+    cfg = build_text_encoder_quant_config("nf4")
+    assert cfg is not None
+    assert cfg.components_to_quantize == ["text_encoder"]
+    assert cfg.quant_backend == "bitsandbytes_4bit"
+    assert cfg.quant_kwargs["bnb_4bit_quant_type"] == "nf4"
+
+
+def test_text_encoder_compute_dtype_matches_pipeline_dtype():
+    """Lệch dtype ở đây là một lần ép kiểu âm thầm giữa encoder và transformer."""
+    from gen_image.models.loader import DTYPE, build_text_encoder_quant_config
+
+    cfg = build_text_encoder_quant_config("nf4")
+    assert cfg.quant_kwargs["bnb_4bit_compute_dtype"] is DTYPE
+
+
+def test_text_encoder_quantization_rejects_typos():
+    """Giá trị lạ phải dừng hẳn, không im lặng rơi về bf16 rồi OOM lúc chạy."""
+    from gen_image.models.loader import build_text_encoder_quant_config
+
+    with pytest.raises(ValueError, match="text_encoder_quantization"):
+        build_text_encoder_quant_config("int4")
+
+
+def test_text_encoder_quantization_tolerates_whitespace_and_case():
+    from gen_image.models.loader import build_text_encoder_quant_config
+
+    assert build_text_encoder_quant_config("  NF4 ").quant_backend == (
+        "bitsandbytes_4bit"
+    )

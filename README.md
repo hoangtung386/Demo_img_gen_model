@@ -21,11 +21,12 @@ một tầng model:
 ## Yêu cầu
 
 - Python >= 3.10 (khuyên dùng môi trường ảo `uv`)
-- GPU NVIDIA >= 20GB VRAM. Mục tiêu tối ưu là **L4 24GB**: toàn bộ pipeline
-  bf16 chiếm ~16 GiB nên thường trú được, không cần offload.
-- ~17GB đĩa cho trọng số
+- GPU NVIDIA >= 16GB VRAM. Mục tiêu tối ưu là **L4 24GB**: pipeline ở cấu
+  hình mặc định (transformer GGUF + text encoder NF4) chiếm ~11 GiB nên
+  thường trú được, không cần offload.
+- ~20GB đĩa cho trọng số
 - Đã accept license của
-  [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
+  [`black-forest-labs/FLUX.2-klein-9B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B)
   trên Hugging Face (model Apache 2.0, nhưng repo có thể vẫn yêu cầu đồng ý)
 
 > ⚠️ **Phase 0 chưa nghiệm thu.** Mọi số VRAM/latency trong README này là
@@ -81,7 +82,8 @@ Các key quan trọng trong `app:` (đọc bởi cả `download` và `serve`):
 | :--- | :--- | :--- |
 | `GENIMG_NUM_STEPS` | `4` | Bản distilled được chưng cất về đúng 4 bước |
 | `GENIMG_GUIDANCE_SCALE` | `1.0` | Giá trị model card. Bản distilled KHÔNG chạy CFG |
-| `GENIMG_QUANTIZATION` | `gguf` | `gguf` / `bf16` — 9B mặc định GGUF |
+| `GENIMG_QUANTIZATION` | `gguf` | Transformer: `gguf` / `bf16` / `fp8` — 9B mặc định GGUF |
+| `GENIMG_TEXT_ENCODER_QUANTIZATION` | `nf4` | **Text encoder** Qwen3-8B: `nf4` / `int8` / `bf16`. Knob riêng — `GENIMG_QUANTIZATION` không chạm tới nó |
 | `GENIMG_COMPILE` | `false` | `torch.compile` transformer; chỉ có tác dụng ở nhánh bf16 |
 | `GENIMG_OFFLOAD` | `resident` | `resident` / `model_offload` |
 | `GENIMG_BASE_MODEL` | `black-forest-labs/FLUX.2-klein-9B` | PHẢI là bản distilled |
@@ -118,22 +120,28 @@ chỉ khác khối được đọc: `gen-image` (Gradio) đọc khối `app:`,
 ```bash
 cp config_setup/base.example.yaml config_setup/base.yaml
 # base.example.yaml đã điền sẵn giá trị khuyến nghị cho L4:
-#   quantization: "bf16"   offload: "resident"   num_steps: 4
+#   quantization: "gguf"   text_encoder_quantization: "nf4"
+#   offload: "resident"    num_steps: 4
 docker compose up -d --build
 ```
 
 #### Vì sao không cần offload nữa
 
-| | Backend cũ (Qwen) | FLUX.2-klein-4B |
+| | Backend cũ (Qwen) | FLUX.2-klein-9B (mặc định) |
 | :--- | ---: | ---: |
-| `text_encoder` | Qwen2.5-VL **15.4 GB** | Qwen3-4B (text-only) **~8 GB** |
-| `transformer` | INT4 10.7 GB | bf16 7.75 GB |
+| `text_encoder` | Qwen2.5-VL **15.4 GB** | Qwen3-8B **NF4 ~5.0 GB** (bf16 là 16.4) |
+| `transformer` | INT4 10.7 GB | GGUF Q4_K_M 5.9 GB |
 | `vae` | 0.24 GB | ~0.3 GB |
-| **Tổng thường trú** | **26.4 GB — không vừa L4** | **~16 GB — vừa** |
+| **Tổng thường trú** | **26.4 GB — không vừa L4** | **~11.2 GB — vừa** |
+
+> 🔴 Con số 11.2 GB chỉ đúng khi nén **cả hai**. `quantization: "gguf"` một
+> mình KHÔNG chạm tới text encoder: để nó ở `bf16` thì tổng là 22.6 GB, sát
+> trần L4 tới mức OOM ngay lượt denoise đầu. Xem
+> [docs/PERFORMANCE.md §0](docs/PERFORMANCE.md).
 
 Backend cũ phải đẩy text encoder ra CPU và chuyển qua lại PCIe mỗi request.
-FLUX.2-klein vừa GPU, nên `offload: "resident"` giữ mọi component tại chỗ và
-**không có lần chuyển CPU↔GPU nào lúc suy luận**. Cả tầng `models/offload.py`
+FLUX.2-klein-9B đã nén thì vừa GPU, nên `offload: "resident"` giữ mọi
+component tại chỗ và **không có lần chuyển CPU↔GPU nào lúc suy luận**. Cả tầng `models/offload.py`
 (4 chiến lược, ~200 dòng) đã bị xoá.
 
 Còn đúng một đường lùi, `offload: "model_offload"`, cho card nhỏ hơn L4 —
@@ -525,7 +533,7 @@ denoise đều gần như vô nghĩa; hai đòn bẩy còn lại là **số ản
 
 Lần chạy đầu với mỗi prompt mất thêm thời gian cho text encoder; các lần sau
 ăn cache và hiện `text 0.0s (cache)`. Khác backend cũ, **đổi ảnh mà giữ
-nguyên prompt vẫn ăn cache** — text encoder Qwen3-4B là text-only nên ảnh
+nguyên prompt vẫn ăn cache** — text encoder Qwen3-8B là text-only nên ảnh
 không tham gia vào khoá cache.
 
 #### Con số trên UI là thời gian GPU, không phải round-trip
@@ -672,7 +680,7 @@ Gradio mặc định xử lý tuần tự).
 ## Thuê GPU L4 trên Google Cloud
 
 Toàn bộ phần này dành cho việc dựng service từ một project GCP trống. Phần
-cứng đích là **L4 24GB** (`g2-*`) — FLUX.2-klein-4B bf16 chỉ cần ~16 GiB nên
+cứng đích là **L4 24GB** (`g2-*`) — FLUX.2-klein-9B đã nén chỉ cần ~11 GiB nên
 không còn lý do trả tiền cho A100 40GB như backend cũ (26.4 GiB).
 
 ### 0. Chuẩn bị

@@ -181,6 +181,7 @@ def main() -> int:
     print("=" * 62)
     print(f"GPU              : {torch.cuda.get_device_name(0)}")
     print(f"Quantization     : {settings.quantization}")
+    print(f"Text encoder     : {settings.text_encoder_quantization}")
     print(f"VAE tiling/slice : {settings.vae_tiling} / {settings.vae_slicing}")
     print(f"Attn backend     : {os.getenv('DIFFUSERS_ATTN_BACKEND', 'native')}")
     print(f"torch.compile    : {settings.compile_transformer}")

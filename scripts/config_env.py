@@ -32,6 +32,7 @@ _YAML_TO_ENV = {
     "num_steps": "GENIMG_NUM_STEPS",
     "guidance_scale": "GENIMG_GUIDANCE_SCALE",
     "quantization": "GENIMG_QUANTIZATION",
+    "text_encoder_quantization": "GENIMG_TEXT_ENCODER_QUANTIZATION",
     "compile_transformer": "GENIMG_COMPILE",
     "device": "GENIMG_DEVICE",
     "offload": "GENIMG_OFFLOAD",

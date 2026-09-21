@@ -129,6 +129,11 @@ class ProcessorConfig:
     # 9B mặc định GGUF: bản BF16 đầy đủ cần ~29GB VRAM. GGUF giải nén trong
     # forward, đổi dung lượng lấy băng thông. Xem models/loader.py.
     quantization: str = "gguf"
+    # Knob RIÊNG cho text encoder Qwen3-8B. `quantization` ở trên chỉ chạm
+    # transformer; ở bản 9B text encoder mới là component lớn nhất (~16.4 GiB
+    # bf16) nên để nguyên nó là OOM trên L4 24GB.
+    # "nf4" (mặc định) | "int8" | "bf16". Xem models/loader.py.
+    text_encoder_quantization: str = "nf4"
     # VAE tiling: decode latent theo ô — đổi chút thời gian lấy VRAM đỉnh
     # thấp hơn. Mặc định TẮT: cấu hình bf16 resident trên L4 đang dư VRAM.
     # Bật khi chạy >1024² hoặc nhồi nhiều process/GPU.
@@ -140,7 +145,8 @@ class ProcessorConfig:
     # torch.compile transformer. Mặc định TẮT — chỉ bật sau khi đã đo thật
     # trên đúng phần cứng đó (xem gen_image/tuning.py::maybe_compile).
     compile_transformer: bool = False
-    # "resident" (mặc định, L4 24GB đủ chỗ cho ~16GB weight) |
+    # "resident" (mặc định — với text_encoder_quantization="nf4" thì tổng
+    # weight ~11 GiB, thừa chỗ trên L4 24GB) |
     # "model_offload" (đường lùi khi card nhỏ hơn hoặc cần nhiều process
     # worker trên cùng card).
     offload: str = "resident"

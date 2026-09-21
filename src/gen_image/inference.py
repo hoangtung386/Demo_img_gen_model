@@ -19,11 +19,11 @@ logger = logging.getLogger("gen-image")
 # chiếu xuống trước khi VAE-encode.
 DEFAULT_OUTPUT_AREA = 1024 * 1024
 
-# FLUX.2 dùng max_sequence_length 512 (Qwen3-4B). Backend cũ truyền 1024 —
+# FLUX.2 dùng max_sequence_length 512 (Qwen3-8B). Backend cũ truyền 1024 —
 # con số đó thuộc về Qwen2.5-VL và sẽ bị pipeline này cắt bớt.
 MAX_SEQUENCE_LENGTH = 512
 
-# Cache prompt-embed. Text encoder của klein là Qwen3-4B **text-only**: ảnh
+# Cache prompt-embed. Text encoder của klein-9B là Qwen3-8B **text-only**: ảnh
 # tham chiếu đi vào model qua VAE latent, KHÔNG qua text encoder. Nên khoá
 # cache chỉ cần prompt — khác hẳn backend cũ (Qwen2.5-VL encode prompt KÈM
 # ảnh, buộc phải băm cả pixel của từng ảnh vào khoá). Hệ quả thực tế: đổi
@@ -40,6 +40,9 @@ _EMBED_CACHE: OrderedDict[str, torch.Tensor] = OrderedDict()
 # Số prompt giữ lại. Mỗi entry là một tensor [1, seq, dim] bf16 — với
 # max_sequence_length=512 thì cỡ vài MB, nên nâng lên hàng trăm vẫn rẻ so
 # với 24GB VRAM. Đặt qua `embed_cache_size` trong base.yaml.
+#
+# Ở bản 9B cache này đáng giá hơn hẳn bản 4B: text encoder to gấp đôi, và
+# khi chạy NF4 thì mỗi lượt encode còn phải giải nén weight trong forward.
 _EMBED_CACHE_MAX = 8
 
 
@@ -88,7 +91,7 @@ def _encode_prompt_cached(pipeline, prompt: str) -> tuple[torch.Tensor, bool]:
     """Trả ``(prompt_embeds, đã_cache)``.
 
     Đổi seed mà giữ nguyên prompt — thao tác lặp nhiều nhất khi thử model —
-    sẽ ăn cache và bỏ qua hẳn lượt chạy Qwen3-4B.
+    sẽ ăn cache và bỏ qua hẳn lượt chạy Qwen3-8B.
 
     Chỉ cache ``prompt_embeds``, không cache ``text_ids``: truyền
     ``prompt_embeds`` vào ``__call__`` khiến ``encode_prompt`` đi vào nhánh

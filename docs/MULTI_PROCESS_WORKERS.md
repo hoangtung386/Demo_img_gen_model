@@ -1,8 +1,9 @@
 # Chạy nhiều process worker song song trên 1 GPU
 
 > **Trạng thái hiện tại (L4-24GB): TẮT.** `docker-compose.yml` chỉ có một
-> service `gen-image-queue`. FLUX.2-klein-4B ở `bf16` chiếm ~16 GiB trong
-> 24 GiB, nên 2 process bf16 không vừa. Tài liệu này mô tả điều kiện để bật
+> service `gen-image-queue`. FLUX.2-klein-9B ở cấu hình mặc định chiếm
+> ~11 GiB trong 24 GiB — 2 process **về lý thuyết** vừa, nhưng chưa ai đo
+> phần activation chồng lên nhau. Tài liệu này mô tả điều kiện để bật
 > lại, và **cảnh báo rằng tiền đề ban đầu của nó không còn đúng** — đọc
 > mục "Batching đã khả thi trở lại" trước khi làm theo.
 
@@ -44,20 +45,26 @@ thời gian khởi động. Hãy đo điều đó **trước** khi dựng proces
 
 VRAM một instance trên GPU:
 
-| Cấu hình | Transformer | Tổng | Vừa 2 process trên L4-24GB? |
-|---|---|---|---|
-| `bf16` | 7.75 GB | ~16 GB | ❌ (2 × 16 = 32) |
-| `gguf` Q8_0 | 4.3 GB | ~12.6 GB | ❌ (2 × 12.6 = 25.2, sát quá) |
-| `gguf` Q4_K_M | 2.6 GB | ~11 GB | ✅ (2 × 11 = 22, còn ~2 GB) |
+VRAM một instance trên GPU (bản **9B**, text encoder Qwen3-8B):
 
-Lưu ý text encoder Qwen3-4B (~8 GB) **không** giảm theo quantization của
-transformer — nó là phần cố định lớn nhất khi chạy nhiều process.
+| `quantization` | `text_encoder_quantization` | Tổng | 2 process trên L4-24GB? |
+|---|---|---:|---|
+| `bf16` | `bf16` | ~34.7 GB | ❌ (1 process cũng không vừa) |
+| `gguf` Q4_K_M | `bf16` | ~22.6 GB | ❌ (1 process đã sát trần → OOM) |
+| `gguf` Q4_K_M | `int8` | ~14.7 GB | ❌ (2 × 14.7 = 29.4) |
+| `gguf` Q4_K_M | `nf4` | **~11.2 GB** | ⚠️ 2 × 11.2 = 22.4 — vừa weight, chưa tính activation |
+
+Điểm khác biệt lớn nhất so với bản 4B: text encoder **Qwen3-8B** (16.4 GB
+bf16) chứ không phải Qwen3-4B (8 GB), và nó **không** giảm theo
+`quantization` của transformer. Ở 9B, nó là component to nhất, nên
+`text_encoder_quantization` mới là knob quyết định có nhét vừa hay không.
 
 Cấu hình (`config_setup/base.yaml`, mục `processor:`):
 
 ```yaml
 processor:
   quantization: "gguf"
+  text_encoder_quantization: "nf4"
   transformer_gguf: "/app/models/gguf/flux-2-klein-4b-Q4_K_M.gguf"
   offload: "resident"
 ```

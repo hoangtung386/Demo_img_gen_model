@@ -44,6 +44,8 @@ DEFAULT_BASE_MODEL = "black-forest-labs/FLUX.2-klein-9B"
 
 # Chạy 9B qua GGUF là cấu hình mặc định. Q4_K_M (~5.9 GB) là điểm cân bằng
 # thực tế hơn Q8_0 (~10 GB) khi còn phải giữ text encoder 8B và VAE trên GPU.
+# Lưu ý GGUF chỉ nén transformer; text encoder có knob riêng
+# (`text_encoder_quantization`) và trên 9B nó mới là component lớn nhất.
 DEFAULT_GGUF_REPO = "unsloth/FLUX.2-klein-9B-GGUF"
 DEFAULT_GGUF_FILE = "flux-2-klein-9b-Q4_K_M.gguf"
 
@@ -55,6 +57,7 @@ class Settings:
     num_steps: int
     guidance_scale: float
     quantization: str
+    text_encoder_quantization: str
     compile_transformer: bool
     vae_tiling: bool
     vae_slicing: bool
@@ -180,6 +183,16 @@ def load_settings() -> Settings:
         ),
         # 9B mặc định GGUF; nạp BF16 cần ~29 GB VRAM và không phù hợp L4 24GB.
         quantization=str(pick("GENIMG_QUANTIZATION", "quantization", "gguf"))
+        .strip()
+        .lower(),
+        # Knob RIÊNG cho text encoder Qwen3-8B (~16.4 GiB ở bf16) — component
+        # lớn nhất của bản 9B, và `quantization` ở trên KHÔNG chạm tới nó.
+        # Mặc định "nf4" vì đó là lựa chọn duy nhất còn chừa đủ VRAM cho
+        # activation trên L4 24GB mà vẫn giữ được offload="resident".
+        # Xem models/loader.py::build_text_encoder_quant_config.
+        text_encoder_quantization=str(
+            pick("GENIMG_TEXT_ENCODER_QUANTIZATION", "text_encoder_quantization", "nf4")
+        )
         .strip()
         .lower(),
         compile_transformer=_as_bool(

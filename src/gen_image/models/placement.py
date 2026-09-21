@@ -7,11 +7,15 @@ text_encoder Qwen2.5-VL 15.4 + transformer INT4 10.7 + vae 0.24 — trong khi
 L4 chỉ có 24 GiB. Không cách nào nhét vừa, nên phải xoay: tách text_encoder
 sang GPU thứ hai, hoặc đẩy nó ra CPU rồi chuyển qua lại PCIe mỗi request.
 
-FLUX.2-klein-9B chạy bằng GGUF để giảm footprint transformer; phần text
-encoder 8B vẫn là thành phần lớn cần được tính vào VRAM.
-+ text_encoder Qwen3-4B ~8 GiB (text-only, KHÔNG phải bản VL) + vae ~0.3 GiB
-≈ 16 GiB. Vừa L4 với chỗ dư cho activation, nên chiến lược đúng chỉ còn một:
-nhét hết lên GPU và không chuyển đi đâu cả.
+FLUX.2-klein-9B cần nén CẢ HAI component lớn thì mới vừa L4. Với cấu hình
+mặc định — transformer GGUF Q4_K_M ~5.9 GiB + text_encoder Qwen3-8B NF4
+~5.0 GiB + vae ~0.3 GiB ≈ 11 GiB — còn dư hơn 10 GiB cho activation, nên
+chiến lược đúng lại chỉ còn một: nhét hết lên GPU và không chuyển đi đâu cả.
+
+⚠️ Con số trên phụ thuộc ``text_encoder_quantization``. Để nó ở ``bf16`` thì
+riêng text encoder đã là 16.4 GiB, tổng ~22.6 GiB — sát trần tới mức OOM ở
+activation, và ``model_offload`` trở thành bắt buộc. Đây chính là chỗ bản 9B
+khác bản 4B: ở 4B, text encoder chỉ 8 GiB nên GGUF một mình là đủ.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ logger = logging.getLogger("gen-image")
 RESIDENT = "resident"
 
 # Đường lùi: diffusers giữ weight ở CPU và chỉ kéo từng module lên GPU ngay
-# trước forward của module đó. Chậm hơn đáng kể (mỗi request trả ~16 GiB qua
+# trước forward của module đó. Chậm hơn đáng kể (mỗi request trả toàn bộ weight qua
 # PCIe) — chỉ dùng khi card nhỏ hơn L4, hoặc khi phải nhồi nhiều process
 # worker lên cùng một card.
 MODEL_OFFLOAD = "model_offload"

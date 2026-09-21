@@ -82,7 +82,7 @@ services:
     #
     # RỦI RO đã gặp thật: nếu base.yaml thiếu/mount sai đường dẫn, mọi key
     # rơi về default hard-code trong gen_image/config.py (quantization=
-    # "bf16" chẳng hạn) mà KHÔNG báo lỗi dừng hẳn — chỉ in WARNING (xem
+    # "gguf", text_encoder_quantization="nf4") mà KHÔNG báo lỗi dừng hẳn — chỉ in WARNING (xem
     # config.py::_load_app_yaml). Luôn `cat config_setup/base.yaml` sau khi
     # đổi máy/VM mới để xác nhận file tồn tại và có đúng khối `app:` trước
     # khi tin tưởng `docker compose up` đã dùng đúng cấu hình đã đo.
@@ -163,7 +163,9 @@ services:
   # multi-process về mọi mặt.
   #
   # config_setup/base.yaml cần có:
-  #   processor.quantization: "bf16"
+  #   processor.quantization: "gguf"
+  #   processor.text_encoder_quantization: "nf4"   # BẮT BUỘC trên L4 24GB:
+  #       text encoder Qwen3-8B ở bf16 là 16.4 GB, để nguyên thì OOM.
   #   processor.offload: "resident"
   #
   # PRODUCTION — chạy mặc định, không cần profile:

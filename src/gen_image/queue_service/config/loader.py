@@ -208,6 +208,9 @@ def _build_settings(cfg: dict) -> Settings:
             device=str(proc.get("device", "") or ""),
             num_steps=int(proc.get("num_steps", 4)),
             quantization=str(proc.get("quantization", "gguf") or "gguf"),
+            text_encoder_quantization=str(
+                proc.get("text_encoder_quantization", "nf4") or "nf4"
+            ),
             vae_tiling=bool(proc.get("vae_tiling", False)),
             vae_slicing=bool(proc.get("vae_slicing", False)),
             embed_cache_size=int(proc.get("embed_cache_size", 8)),

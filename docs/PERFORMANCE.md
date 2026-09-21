@@ -1,7 +1,7 @@
 # Tối ưu hiệu năng — cái gì đã có, cái gì đừng làm
 
 Tài liệu này tồn tại vì phần lớn lời khuyên "tối ưu image gen" trên mạng viết
-cho **Stable Diffusion / SDXL chạy 30 bước**. FLUX.2-klein-4B là model
+cho **Stable Diffusion / SDXL chạy 30 bước**. FLUX.2-klein-9B là model
 **rectified-flow đã chưng cất về 4 bước**, nên một số lời khuyên đó vô tác
 dụng, và một số **có hại thật sự**.
 
@@ -14,7 +14,7 @@ dụng, và một số **có hại thật sự**.
 | Kỹ thuật (theo cách nói của SDXL) | Ở đây | Ghi chú |
 |---|---|---|
 | FP16/BF16 thay FP32 | ✅ **đã có** | `loader.DTYPE = bfloat16`, không có đường nào chạy fp32 |
-| Distilled model (Turbo/LCM/Lightning) | ✅ **là chính model** | klein-4B đã distilled; preflight cảnh báo nếu tải nhầm bản base |
+| Distilled model (Turbo/LCM/Lightning) | ✅ **là chính model** | klein-9B đã distilled; preflight cảnh báo nếu tải nhầm bản base |
 | Efficient attention (xformers) | ✅ **đã có, ĐỪNG thêm xformers** | xem §1 |
 | `torch.compile` | ✅ **đã có**, mặc định tắt | `tuning.maybe_compile()`, chờ đo — xem §2 |
 | TensorRT | ❌ ngoài phạm vi | xem §3 |
@@ -24,6 +24,31 @@ dụng, và một số **có hại thật sự**.
 | Continuous batching / Triton | ❌ ngoài phạm vi | xem §7 |
 | **FP8** | 🧪 **mới thêm, chưa đo** | xem §8 |
 | **VAE tiling / slicing** | 🧪 **mới thêm, mặc định tắt** | xem §9 |
+| **Nén text encoder (NF4)** | ✅ **đã có, MẶC ĐỊNH BẬT** | đòn bẩy VRAM lớn nhất ở bản 9B — xem §0 |
+
+---
+
+## 0. Ngân sách VRAM trên L4 — đọc trước mọi thứ khác
+
+Bản 9B có **hai** component lớn, và chúng nén bằng hai knob khác nhau:
+
+| Component | bf16 | Knob | Mặc định |
+|---|---:|---|---|
+| text_encoder Qwen3-8B | **16.4 GiB** | `text_encoder_quantization` | `nf4` → ~5.0 GiB |
+| transformer | ~18 GiB | `quantization` | `gguf` Q4_K_M → 5.9 GiB |
+| VAE | 0.3 GiB | — | không nén |
+
+Tổng ở cấu hình mặc định: **~11.2 GiB**, dư hơn 10 GiB cho activation trên
+L4 24GB, giữ được `offload: "resident"`.
+
+> 🔴 **Cạm bẫy đã làm hỏng một lần deploy thật.** Đặt `quantization: "gguf"`
+> nhưng để `text_encoder_quantization: "bf16"` thì tổng là **22.6 GiB** —
+> vừa đúng VRAM khả dụng của L4, nên service load xong, báo "Ready", rồi OOM
+> ở lượt denoise đầu tiên. GGUF **không** chạm tới text encoder. Ở bản 4B
+> (text encoder chỉ 8 GiB) thì một knob là đủ; ở 9B thì không.
+
+Toàn bộ con số "~16 GiB tổng, L4 dư VRAM" trong các bản tài liệu cũ thuộc về
+**klein-4B** và không còn đúng.
 
 ---
 
@@ -180,9 +205,10 @@ suy giảm nhìn thấy được không. `torch.compile` kết hợp fp8 cũng c
 - `vae_slicing`: decode từng ảnh một khi batch > 1. Hiện batch luôn = 1 nên
   **không có tác dụng**; để sẵn cho lúc bật batching.
 
-Mặc định tắt vì cấu hình bf16 resident trên L4 đang **dư VRAM chứ không
-thiếu**. Bật khi: chạy trên 1024², hoặc nhồi nhiều process lên một card,
-hoặc gặp OOM lúc decode
+Mặc định tắt vì cấu hình mặc định (transformer GGUF + text encoder NF4,
+~11 GiB) đang **dư VRAM chứ không thiếu**. Bật khi: để text encoder ở bf16,
+hoặc chạy trên 1024²+, hoặc nhồi nhiều process lên một card, hoặc gặp OOM
+lúc decode
 ([diffusers#13079](https://github.com/huggingface/diffusers/issues/13079)).
 
 Lưu ý `Flux2KleinPipeline` **không có** `enable_vae_tiling()` ở cấp pipeline
@@ -193,6 +219,8 @@ Lưu ý `Flux2KleinPipeline` **không có** `enable_vae_tiling()` ở cấp pipe
 
 ## Thứ tự nên làm khi cần nhanh hơn
 
+0. **Kiểm VRAM trước.** Nếu đang OOM thì không phải bài toán tốc độ — xem
+   §0. `text_encoder_quantization` là knob đầu tiên cần nhìn.
 1. **Đo trước.** `make benchmark` — đọc bảng tỉ trọng giai đoạn. Tối ưu thứ
    không phải nút cổ chai là tốn công vô ích.
 2. **Hạ `output_area`.** Chi phí denoise tỉ lệ với số token latent, tức với

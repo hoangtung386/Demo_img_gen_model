@@ -26,7 +26,7 @@ def example_rows(cases, to_row) -> list[list]:
 # Chi phí denoise tỉ lệ với số token latent, tức với diện tích ảnh ra. Đây là
 # đòn bẩy tốc độ thật sự duy nhất còn lại: hạ resolution ẢNH VÀO không giúp gì
 # vì Flux2KleinPipeline tự thu mọi ảnh tham chiếu xuống <=1024² trước khi
-# VAE-encode, và text encoder Qwen3-4B không nhận ảnh.
+# VAE-encode, và text encoder Qwen3-8B không nhận ảnh.
 OUTPUT_PRESETS: dict[str, int] = {
     "Chuẩn — 1024px (~1.0 MP)": DEFAULT_OUTPUT_AREA,
     "Nhanh — 832px (~0.7 MP)": 832 * 832,

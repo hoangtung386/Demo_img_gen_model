@@ -12,6 +12,7 @@ from diffusers import (
     Flux2Transformer2DModel,
     GGUFQuantizationConfig,
 )
+from diffusers.quantizers import PipelineQuantizationConfig
 
 from ..config import PROJECT_ROOT, Settings
 from .placement import place
@@ -25,6 +26,18 @@ DTYPE = torch.bfloat16
 
 # Các giá trị hợp lệ của `quantization`. 9B mặc định chạy GGUF.
 QUANTIZATIONS = ("bf16", "gguf", "fp8")
+
+# Các giá trị hợp lệ của `text_encoder_quantization`.
+#
+# Ở FLUX.2-klein-9B, text encoder là **Qwen3-8B** — bf16 ≈ 16.4 GiB, tức là
+# component LỚN NHẤT của pipeline, lớn hơn cả transformer GGUF. Đây là khác
+# biệt then chốt so với klein-4B (Qwen3-4B, ~8 GiB), nơi transformer mới là
+# phần to nhất và `quantization` một mình đã đủ.
+#
+# Hệ quả: trên L4 24GB, nén transformer mà để nguyên text encoder thì tổng
+# weight vẫn ~22.6 GiB (16.4 + 5.9 + 0.3) — vừa đúng bằng VRAM khả dụng,
+# nên OOM ngay ở activation của lượt denoise đầu tiên.
+TEXT_ENCODER_QUANTIZATIONS = ("bf16", "nf4", "int8")
 
 
 def _model_root(settings: Settings) -> Path:
@@ -102,6 +115,89 @@ def resolve_gguf_path(settings: Settings) -> str:
     return url
 
 
+def build_text_encoder_quant_config(mode: str) -> PipelineQuantizationConfig | None:
+    """Cấu hình lượng tử hoá cho **text encoder**, hoặc None nếu giữ bf16.
+
+    Vì sao knob này tách khỏi ``quantization``: hai component được nén bằng
+    hai cơ chế khác hẳn nhau và có nút cổ chai khác nhau.
+
+      - transformer: GGUF, nạp từ MỘT file rời qua ``from_single_file``.
+      - text encoder: nằm trong repo base dưới dạng safetensors, nén tại
+        chỗ lúc ``from_pretrained`` bằng bitsandbytes.
+
+    Gộp chung thành một knob sẽ buộc hai thứ phải đổi cùng nhau, trong khi
+    cấu hình đáng dùng nhất trên L4 lại là một tổ hợp lệch: transformer GGUF
+    Q4_K_M + text encoder NF4.
+
+    Ngân sách VRAM cho FLUX.2-klein-9B (weight, chưa tính activation):
+
+    | text encoder | transformer GGUF Q4_K_M | VAE | tổng |
+    |---|---|---|---|
+    | ``bf16`` 16.4 GiB | 5.9 GiB | 0.3 | **22.6 GiB** → OOM trên L4 |
+    | ``int8``  8.5 GiB | 5.9 GiB | 0.3 | ~14.7 GiB |
+    | ``nf4``   ~5.0 GiB | 5.9 GiB | 0.3 | **~11.2 GiB** ← mặc định |
+
+    ``nf4`` là mặc định vì nó là lựa chọn DUY NHẤT chừa lại đủ chỗ cho
+    activation ở 1024² mà vẫn giữ được ``offload="resident"`` — tức không
+    một lần chuyển weight qua PCIe nào lúc suy luận. ``int8`` cũng vừa,
+    nhưng kernel LLM.int8() của bitsandbytes chậm hơn NF4 đáng kể ở batch
+    nhỏ, và ở đây batch luôn = 1.
+
+    ⚠️ **Chưa đo chất lượng.** NF4 làm lệch embedding của prompt ở mức nào
+    thì phải nhìn ảnh mới biết. Lưu ý cache embed (``inference._EMBED_CACHE``)
+    giữ lại kết quả theo prompt, nên sai lệch nếu có sẽ dính trong cả phiên.
+    Đặt ``text_encoder_quantization: "bf16"`` + ``offload: "model_offload"``
+    để có bản đối chứng không nén.
+    """
+    normalized = (mode or "").strip().lower()
+    if normalized not in TEXT_ENCODER_QUANTIZATIONS:
+        raise ValueError(
+            f"text_encoder_quantization không hợp lệ: {mode!r}. "
+            f"Chọn một trong: {' | '.join(TEXT_ENCODER_QUANTIZATIONS)}."
+        )
+    if normalized == "bf16":
+        logger.warning(
+            "text_encoder_quantization='bf16': text encoder Qwen3-8B chiếm "
+            "~16.4 GiB. Cộng transformer và VAE thì vượt VRAM khả dụng của "
+            "L4 24GB — cấu hình này cần card lớn hơn, hoặc "
+            "offload='model_offload'."
+        )
+        return None
+
+    if normalized == "int8":
+        backend = "bitsandbytes_8bit"
+        quant_kwargs: dict[str, object] = {"load_in_8bit": True}
+    else:
+        backend = "bitsandbytes_4bit"
+        quant_kwargs = {
+            "load_in_4bit": True,
+            # NF4 chứ không phải FP4: cùng dung lượng, nhưng NF4 giả định
+            # weight phân phối chuẩn — đúng với weight đã qua huấn luyện —
+            # nên sai số lượng tử hoá thấp hơn. Không có lý do chọn FP4.
+            "bnb_4bit_quant_type": "nf4",
+            # Nén thêm một lượt các hằng số lượng tử hoá. Tiết kiệm ~0.4 GiB
+            # với model 8B, chi phí tính toán gần như không đo được.
+            "bnb_4bit_use_double_quant": True,
+            # Giải nén về đúng dtype của phần còn lại trong pipeline. Để lệch
+            # sang fp16 ở đây là mời một lần ép kiểu âm thầm ở ranh giới
+            # text encoder → transformer.
+            "bnb_4bit_compute_dtype": DTYPE,
+        }
+
+    logger.info(
+        "Text encoder: %s (bitsandbytes) — component lớn nhất của pipeline 9B.",
+        normalized,
+    )
+    return PipelineQuantizationConfig(
+        quant_backend=backend,
+        quant_kwargs=quant_kwargs,
+        # CHỈ text encoder. Transformer đã được dựng sẵn và truyền vào
+        # ``from_pretrained`` qua kwargs; VAE thì bé (0.3 GiB) và là nơi
+        # sai số lượng tử hoá hiện ra trực tiếp thành artefact trên ảnh.
+        components_to_quantize=["text_encoder"],
+    )
+
+
 def _load_gguf_transformer(
     settings: Settings, base_model: str
 ) -> Flux2Transformer2DModel:
@@ -140,14 +236,20 @@ def load_pipeline(settings: Settings, device: str) -> Flux2KleinPipeline:
     nên một object phục vụ được cả hai đường — không còn chỗ nào để hai
     pipeline lệch cấu hình khỏi nhau.
 
+    **Hai knob lượng tử hoá, không phải một.** ``quantization`` điều khiển
+    transformer; ``text_encoder_quantization`` điều khiển text encoder
+    Qwen3-8B (~16.4 GiB ở bf16 — component lớn nhất ở bản 9B). Trên L4 24GB
+    phải nén CẢ HAI; nén mỗi transformer là không đủ. Xem
+    ``build_text_encoder_quant_config`` để có bảng ngân sách VRAM.
+
     ``quantization``:
-      - ``bf16``: đọc thẳng transformer bf16 của repo. Model 9B đầy đủ cần
-        khoảng 29 GiB VRAM, nên đây không phải cấu hình mặc định.
+      - ``bf16``: đọc thẳng transformer bf16 của repo, ~18 GiB. Chỉ vừa L4
+        khi text encoder đã nén, và ngay cả khi đó cũng rất sát trần.
       - ``gguf`` (mặc định): transformer lượng tử hoá (~5.9 GiB ở Q4_K_M).
-        Nhỏ hơn nhưng
-        diffusers giải nén về ``compute_dtype`` ngay trong forward — đổi
-        dung lượng lấy băng thông, mà băng thông mới là nút cổ chai trên L4.
-        Chỉ chọn khi cần chỗ cho nhiều process worker trên cùng một card.
+        Nhỏ hơn nhưng diffusers giải nén về ``compute_dtype`` ngay trong
+        forward — đổi dung lượng lấy băng thông. Ở bản 4B, đánh đổi đó là
+        một khoản lỗ vì bf16 vốn đã vừa; ở bản 9B thì bf16 KHÔNG vừa, nên
+        đây thành cấu hình mặc định chứ không còn là đường phụ.
         Cần dùng cùng config của base pipeline 9B, không phải config 4B.
       - ``fp8``: lượng tử hoá weight sang float8 bằng optimum-quanto. L4 là
         Ada (sm_89) nên CÓ tensor core FP8 thật — khác GGUF, đây không phải
@@ -156,14 +258,21 @@ def load_pipeline(settings: Settings, device: str) -> Flux2KleinPipeline:
     """
     base_model = resolve_base_model(settings)
     logger.info(
-        "Quantization: %s | steps: %d | guidance: %s | offload: %s",
+        "Quantization: transformer=%s | text_encoder=%s | steps: %d | "
+        "guidance: %s | offload: %s",
         settings.quantization,
+        settings.text_encoder_quantization,
         settings.num_steps,
         settings.guidance_scale,
         settings.offload,
     )
 
     kwargs: dict[str, object] = {"torch_dtype": DTYPE}
+    text_encoder_quant = build_text_encoder_quant_config(
+        settings.text_encoder_quantization
+    )
+    if text_encoder_quant is not None:
+        kwargs["quantization_config"] = text_encoder_quant
     if settings.quantization == "gguf":
         kwargs["transformer"] = _load_gguf_transformer(settings, base_model)
     elif settings.quantization == "fp8":
