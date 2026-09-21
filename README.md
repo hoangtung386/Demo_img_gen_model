@@ -1,7 +1,8 @@
-# FLUX.2-klein-4B — Service sinh ảnh
+# FLUX.2-klein-9B GGUF — Service sinh ảnh
 
 Sinh ảnh từ chữ và sửa ảnh theo tham chiếu bằng
-[**FLUX.2-klein-4B**](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
+[**FLUX.2-klein-9B**](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B)
+với transformer [**GGUF Q4_K_M của Unsloth**](https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF)
 (bản step-distilled, 4 bước) qua `diffusers`. Ship hai entrypoint dùng chung
 một tầng model:
 
@@ -80,10 +81,10 @@ Các key quan trọng trong `app:` (đọc bởi cả `download` và `serve`):
 | :--- | :--- | :--- |
 | `GENIMG_NUM_STEPS` | `4` | Bản distilled được chưng cất về đúng 4 bước |
 | `GENIMG_GUIDANCE_SCALE` | `1.0` | Giá trị model card. Bản distilled KHÔNG chạy CFG |
-| `GENIMG_QUANTIZATION` | `bf16` | `bf16` / `gguf` — xem "bf16 hay GGUF?" bên dưới |
+| `GENIMG_QUANTIZATION` | `gguf` | `gguf` / `bf16` — 9B mặc định GGUF |
 | `GENIMG_COMPILE` | `false` | `torch.compile` transformer; chỉ có tác dụng ở nhánh bf16 |
 | `GENIMG_OFFLOAD` | `resident` | `resident` / `model_offload` |
-| `GENIMG_BASE_MODEL` | `black-forest-labs/FLUX.2-klein-4B` | PHẢI là bản distilled |
+| `GENIMG_BASE_MODEL` | `black-forest-labs/FLUX.2-klein-9B` | PHẢI là bản distilled |
 | `GENIMG_BASE_MODEL_LOCAL` | (rỗng) | Path weight đã có trên đĩa; rỗng → tải từ Hub |
 | `GENIMG_TRANSFORMER_GGUF` | (rỗng) | Path file `.gguf`; chỉ đọc khi `quantization: gguf` |
 | `GENIMG_WARMUP` | `true` | Chạy lượt sinh ảnh giả lúc khởi động để người dùng đầu tiên không phải chờ |
@@ -184,10 +185,11 @@ python scripts/download_model.py
 ```
 
 Script tải:
-1. Pipeline đầy đủ (`black-forest-labs/FLUX.2-klein-4B`, ~16GB) →
-   `models/FLUX.2-klein-4B` — gồm transformer bf16, text_encoder Qwen3-4B,
+1. Các component pipeline cần cho GGUF (`black-forest-labs/FLUX.2-klein-9B`) →
+   `models/FLUX.2-klein-9B` — gồm text encoder, VAE, scheduler, tokenizer và
+   `transformer/config.json`; transformer BF16 không được tải.
    vae, scheduler, tokenizer.
-2. *(chỉ khi `quantization: "gguf"`)* đúng **một** file `.gguf` →
+2. Đúng **một** file `.gguf` (`flux-2-klein-9b-Q4_K_M.gguf`) →
    `models/gguf/`. Repo GGUF có ~15 bản lượng tử hoá; script cố tình không
    `snapshot_download` cả repo.
 
@@ -215,7 +217,7 @@ make preflight
 cần `.env`, không cần `HF_TOKEN`, không chạm tới HuggingFace.**
 
 ```bash
-git clone -b demo/FLUX_2_klein_4B https://github.com/hoangtung386/Demo_img_gen_model.git
+git clone -b demo/FLUX_2_klein_9B https://github.com/hoangtung386/Demo_img_gen_model.git
 cd Demo_img_gen_model
 cp /directory-path/ai-service-account.json .      # key service account GCS
 docker compose up -d --build

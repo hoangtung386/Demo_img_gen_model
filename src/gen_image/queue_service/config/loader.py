@@ -207,7 +207,7 @@ def _build_settings(cfg: dict) -> Settings:
             type=str(proc.get("type", "flux2_klein")),
             device=str(proc.get("device", "") or ""),
             num_steps=int(proc.get("num_steps", 4)),
-            quantization=str(proc.get("quantization", "bf16") or "bf16"),
+            quantization=str(proc.get("quantization", "gguf") or "gguf"),
             vae_tiling=bool(proc.get("vae_tiling", False)),
             vae_slicing=bool(proc.get("vae_slicing", False)),
             embed_cache_size=int(proc.get("embed_cache_size", 8)),

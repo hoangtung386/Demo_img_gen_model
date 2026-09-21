@@ -23,7 +23,7 @@ def base_settings() -> Settings:
     return Settings(
         num_steps=4,
         guidance_scale=1.0,
-        quantization="bf16",
+        quantization="gguf",
         compile_transformer=False,
         vae_tiling=False,
         vae_slicing=False,

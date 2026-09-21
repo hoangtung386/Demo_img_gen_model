@@ -116,7 +116,7 @@ class StorageConfig:
 @dataclass(frozen=True)
 class ProcessorConfig:
     """
-    FLUX.2-klein-4B inference knobs.
+    FLUX.2-klein-9B inference knobs.
 
     Map thẳng vào gen_image.config.Settings khi build pipeline. Chỉ giữ các
     field service queue thực sự dùng (không có server_name/port của Gradio).
@@ -126,10 +126,9 @@ class ProcessorConfig:
     type: str = "flux2_klein"
     device: str = ""
     num_steps: int = 4
-    # "bf16" (mặc định) | "gguf". bf16 là mặc định dù nặng hơn: GGUF giải nén
-    # trong forward nên đổi dung lượng lấy băng thông, mà băng thông là nút
-    # cổ chai trên L4. Xem gen_image/models/loader.py::load_pipeline.
-    quantization: str = "bf16"
+    # 9B mặc định GGUF: bản BF16 đầy đủ cần ~29GB VRAM. GGUF giải nén trong
+    # forward, đổi dung lượng lấy băng thông. Xem models/loader.py.
+    quantization: str = "gguf"
     # VAE tiling: decode latent theo ô — đổi chút thời gian lấy VRAM đỉnh
     # thấp hơn. Mặc định TẮT: cấu hình bf16 resident trên L4 đang dư VRAM.
     # Bật khi chạy >1024² hoặc nhồi nhiều process/GPU.

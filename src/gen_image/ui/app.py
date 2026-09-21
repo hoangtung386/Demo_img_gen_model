@@ -1,7 +1,7 @@
 """Giao diện Gradio — bảy tab trên cùng một pipeline.
 
 Mỗi tab là một bài toán đang thử nghiệm trên cùng một pipeline
-FLUX.2-klein-4B: thử đồ ảo, thiết kế lại nội thất, chuyển ảnh chụp thành
+FLUX.2-klein-9B: thử đồ ảo, thiết kế lại nội thất, chuyển ảnh chụp thành
 hoạt hình, ghép hai người và hoán đổi khuôn mặt. Điểm khác nhau giữa các tab
 nằm ở prompt (xem ``prompts.py``) và ở thứ tự ảnh đưa vào pipeline.
 
@@ -102,10 +102,10 @@ def build_ui(
             aspect_ratio=ASPECT_RATIOS.get(ratio, 1.0),
         )
 
-    title = "FLUX.2-klein-4B — Demo 7 task"
+    title = "FLUX.2-klein-9B GGUF — Demo 7 task"
     with gr.Blocks(title=title) as demo:
         gr.Markdown(
-            "# FLUX.2-klein-4B (step-distilled, 4 bước)\n"
+            "# FLUX.2-klein-9B GGUF (step-distilled, 4 bước)\n"
             "Năm tab đầu có prompt chuyên biệt viết sẵn và ảnh mẫu "
             "bấm-là-chạy: **Virtual Try-On**, **Home Design**, **Image to "
             "Cartoon**, **Ghép 2 người ôm nhau**, **Face Swap**. Hai tab "

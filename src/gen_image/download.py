@@ -19,7 +19,7 @@ logger = logging.getLogger("download")
 
 # Tên thư mục local cho repo pipeline. Giữ khớp với base_model_local trong
 # config_setup/base.example.yaml và docker-compose.yml.
-BASE_DIR_NAME = "FLUX.2-klein-4B"
+BASE_DIR_NAME = "FLUX.2-klein-9B"
 
 # Repo GGUF có ~15 bản lượng tử hoá (Q2_K … BF16), tổng vài chục GB. Chỉ kéo
 # ĐÚNG một file đang dùng — `snapshot_download` cả repo ở đây là một lỗi tốn
@@ -67,10 +67,21 @@ def download(settings: Settings) -> None:
 
     base_dir = model_root / BASE_DIR_NAME
     logger.info("Tải base pipeline %s -> %s", settings.base_model, base_dir)
+    # Repo 9B có transformer BF16 ~18GB, nhưng runtime thay nó bằng GGUF.
+    # Chỉ kéo các component còn lại và transformer/config.json (để
+    # from_single_file biết đúng kiến trúc 9B); tránh tải rồi bỏ đi BF16.
     snapshot_download(
         repo_id=settings.base_model,
         local_dir=str(base_dir),
         token=hf_token,
+        allow_patterns=[
+            "model_index.json",
+            "scheduler/**",
+            "tokenizer/**",
+            "text_encoder/**",
+            "vae/**",
+            "transformer/config.json",
+        ],
     )
     logger.info("Base pipeline đã tải xong.")
 

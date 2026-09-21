@@ -1,4 +1,4 @@
-"""Dựng pipeline FLUX.2-klein-4B và giải đường dẫn trọng số."""
+"""Dựng pipeline FLUX.2-klein-9B với transformer GGUF và giải đường dẫn."""
 
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ logger = logging.getLogger("gen-image")
 # kiệm", nó chỉ đổi lấy ảnh ra có artefact.
 DTYPE = torch.bfloat16
 
-# Các giá trị hợp lệ của `quantization`. "bf16" là mặc định; xem
-# load_pipeline() để biết vì sao nó là mặc định dù nặng nhất trên đĩa.
+# Các giá trị hợp lệ của `quantization`. 9B mặc định chạy GGUF.
 QUANTIZATIONS = ("bf16", "gguf", "fp8")
 
 
@@ -90,8 +89,8 @@ def _load_gguf_transformer(
     ``config=base_model`` + ``subfolder="transformer"`` là BẮT BUỘC, không
     phải tuỳ chọn cho gọn. Thiếu hai tham số này, ``from_single_file`` gọi
     ``fetch_diffusers_config()`` để tự đoán kiến trúc từ nội dung checkpoint;
-    nó nhận ra "đây là flux2" nhưng không phân biệt được **klein 4B** với
-    **dev**, nên dựng state-dict rỗng theo chiều của dev rồi nổ:
+    nó nhận ra "đây là flux2" nhưng không phân biệt được đúng biến thể klein
+    9B với **dev**, nên có thể dựng state-dict sai chiều rồi nổ.
 
         double_stream_modulation_img.linear.weight has an expected quantized
         shape of: (18432, 3072), but received shape: (18432, 6144)
@@ -111,7 +110,7 @@ def _load_gguf_transformer(
 
 
 def load_pipeline(settings: Settings, device: str) -> Flux2KleinPipeline:
-    """Nạp FLUX.2-klein-4B. MỘT pipeline cho cả text-to-image lẫn image-edit.
+    """Nạp FLUX.2-klein-9B. MỘT pipeline cho cả text-to-image lẫn image-edit.
 
     Khác hẳn backend cũ, nơi phải dựng hai pipeline (``QwenImageEditPlus`` bắt
     buộc có ``image=``, nên text-to-image cần một ``QwenImagePipeline`` thứ
@@ -120,13 +119,14 @@ def load_pipeline(settings: Settings, device: str) -> Flux2KleinPipeline:
     pipeline lệch cấu hình khỏi nhau.
 
     ``quantization``:
-      - ``bf16`` (mặc định): đọc thẳng transformer bf16 của repo. ~16 GiB
-        tổng, vừa L4 24GB, và là nhánh DUY NHẤT ``torch.compile`` được.
-      - ``gguf``: transformer lượng tử hoá (~4.3 GiB ở Q8_0). Nhỏ hơn nhưng
+      - ``bf16``: đọc thẳng transformer bf16 của repo. Model 9B đầy đủ cần
+        khoảng 29 GiB VRAM, nên đây không phải cấu hình mặc định.
+      - ``gguf`` (mặc định): transformer lượng tử hoá (~5.9 GiB ở Q4_K_M).
+        Nhỏ hơn nhưng
         diffusers giải nén về ``compute_dtype`` ngay trong forward — đổi
         dung lượng lấy băng thông, mà băng thông mới là nút cổ chai trên L4.
         Chỉ chọn khi cần chỗ cho nhiều process worker trên cùng một card.
-        Xem docs/REFACTOR_FLUX2_KLEIN_4B.md §2.2.
+        Cần dùng cùng config của base pipeline 9B, không phải config 4B.
       - ``fp8``: lượng tử hoá weight sang float8 bằng optimum-quanto. L4 là
         Ada (sm_89) nên CÓ tensor core FP8 thật — khác GGUF, đây không phải
         giải nén trong forward. **CHƯA ĐƯỢC ĐO** trên phần cứng nào; xem
@@ -225,7 +225,7 @@ def _load_fp8_transformer(base_model: str) -> Flux2Transformer2DModel:
 def _warn_if_not_distilled(pipeline: Flux2KleinPipeline, base_model: str) -> None:
     """Kêu to nếu nạp nhầm bản KHÔNG distilled.
 
-    ``FLUX.2-klein-4B`` (distilled) và ``FLUX.2-klein-base-4B`` khác nhau
+    ``FLUX.2-klein-9B`` (distilled) và ``FLUX.2-klein-base-9B`` khác nhau
     đúng một cờ trong model_index.json, nhưng khác nhau ~4 lần về tốc độ:
     bản base cần vài chục bước và guidance thật (CFG hai nhánh), bản distilled
     xong trong 4 bước với guidance nhúng sẵn. Tải nhầm thì service vẫn chạy,

@@ -1,4 +1,4 @@
-"""Spike xác thực FLUX.2-klein-4B trên GPU thật — Phase 0 của refactor.
+"""Spike xác thực FLUX.2-klein-9B GGUF trên GPU thật.
 
 Đây là CỔNG CHẶN: chạy script này trên đúng phần cứng đích (L4 24GB) và ghi
 kết quả vào ``docs/adr/0001-flux2-klein-backend.md`` TRƯỚC khi tin vào bất kỳ
@@ -28,12 +28,12 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-# Bản DISTILLED. "FLUX.2-klein-base-4B" là repo khác: không distilled, cần
+# Bản DISTILLED. "FLUX.2-klein-base-9B" là repo khác: không distilled, cần
 # vài chục bước và guidance thật — tải nhầm là mất ~4 lần tốc độ.
-REPO = "black-forest-labs/FLUX.2-klein-4B"
+REPO = "black-forest-labs/FLUX.2-klein-9B"
 GGUF_URL = (
-    "https://huggingface.co/unsloth/FLUX.2-klein-4B-GGUF/blob/main/"
-    "flux-2-klein-4b-Q8_0.gguf"
+    "https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/blob/main/"
+    "flux-2-klein-9b-Q4_K_M.gguf"
 )
 
 PROMPT = "a cat holding a sign that says hello world"
@@ -70,7 +70,7 @@ def build(mode: str):
 
     # config= + subfolder= là BẮT BUỘC, không phải cho gọn: thiếu chúng,
     # from_single_file tự đoán kiến trúc từ checkpoint, nhận ra "flux2"
-    # nhưng không phân biệt được klein-4B với dev, rồi nổ shape mismatch
+    # nhưng không phân biệt được klein-9B với dev, rồi nổ shape mismatch
     # (diffusers#13001). Đây chính là giả thuyết mà spike này đi kiểm.
     transformer = Flux2Transformer2DModel.from_single_file(
         GGUF_URL,

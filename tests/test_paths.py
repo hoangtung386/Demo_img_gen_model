@@ -33,7 +33,7 @@ def test_resolve_base_model_falls_back_to_hub(base_settings):
 
 
 def test_resolve_gguf_local(base_settings, tmp_path):
-    weights = tmp_path / "flux-2-klein-4b-Q8_0.gguf"
+    weights = tmp_path / "flux-2-klein-9b-Q4_K_M.gguf"
     weights.write_bytes(b"")
     settings = dataclasses.replace(base_settings, transformer_gguf=str(weights))
     assert resolve_gguf_path(settings) == str(weights)

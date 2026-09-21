@@ -24,10 +24,8 @@ from gen_image.config import load_settings  # noqa: E402
 
 _GB = 1024**3
 
-# Ngưỡng cảnh báo tổng weight. FLUX.2-klein-4B bf16 đo được ~16 GB
-# (transformer 7.75 + text_encoder Qwen3-4B ~8 + vae ~0.3). Vượt xa ngưỡng
-# này nghĩa là đang trỏ nhầm sang repo khác — nhiều khả năng là FLUX.2-dev
-# (32B, ~64GB) hoặc bản klein 9B.
+# 9B GGUF Q4_K_M + các component nền phải vừa GPU 24GB. Vượt xa ngưỡng này
+# thường là do vô tình tải/nạp transformer BF16 thay cho GGUF.
 _EXPECTED_MAX_GB = 24.0
 
 
@@ -84,7 +82,7 @@ def check_component(base: Path, name: str) -> tuple[bool, int]:
 def _check_distilled(spec: dict) -> None:
     """Kêu nếu model_index.json không đánh dấu bản distilled.
 
-    Nạp nhầm ``FLUX.2-klein-base-4B`` vẫn chạy được, chỉ là mỗi ảnh chậm
+    Nạp nhầm ``FLUX.2-klein-base-9B`` vẫn chạy được, chỉ là mỗi ảnh chậm
     gấp bội ở cùng num_steps và ảnh ra ở 4 bước thì nhiễu. Bắt ở đây rẻ hơn
     nhiều so với việc đổ lỗi cho GPU sau khi deploy.
     """
@@ -174,9 +172,8 @@ def main() -> int:
     print(f"Tổng weight sẽ nạp vào VRAM: {total / _GB:.1f} GB")
     if total / _GB > _EXPECTED_MAX_GB:
         _warn(
-            f"vượt {_EXPECTED_MAX_GB:.0f} GB — FLUX.2-klein-4B bf16 chỉ "
-            "khoảng 16 GB. Kiểm tra xem có đang trỏ nhầm sang FLUX.2-dev "
-            "hoặc bản klein 9B không."
+            f"vượt {_EXPECTED_MAX_GB:.0f} GB — kiểm tra xem transformer "
+            "BF16 có bị tải/nạp thay vì file GGUF Q4_K_M hay không."
         )
     print(f"Chiến lược đặt model: {settings.offload}")
     print("=" * 66)

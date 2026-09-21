@@ -33,7 +33,7 @@ if command -v python3 >/dev/null 2>&1 && [ -f "$_SELF_DIR/config_env.py" ]; then
 fi
 
 DIR="${GENIMG_MODELS_DIR:-/models}"
-REQUIRE="${GENIMG_MODELS_REQUIRE:-FLUX.2-klein-4B/model_index.json}"
+REQUIRE="${GENIMG_MODELS_REQUIRE:-FLUX.2-klein-9B/model_index.json}"
 MARKER="$DIR/.fetched-from"
 STAGE="$DIR/.extract-tmp"
 
@@ -186,7 +186,7 @@ missing=$(_missing)
 if [ -n "$missing" ]; then
     log "Cây thư mục thực tế ở $DIR:"
     ls -la "$DIR" >&2 || true
-    die "thiếu:$missing — kiểm tra archive có chứa FLUX.2-klein-4B/ không."
+    die "thiếu:$missing — kiểm tra archive có chứa FLUX.2-klein-9B/ không."
 fi
 
 printf '%s' "$URI" > "$MARKER"

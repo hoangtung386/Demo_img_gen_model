@@ -101,31 +101,26 @@ storage:
 # ║  benchmark / debug. Default values cover 95% trường hợp.             ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
-# FLUX.2-klein-4B inference. Các knob ở đây map thẳng vào
+# FLUX.2-klein-9B inference. Các knob ở đây map thẳng vào
 # gen_image.config.Settings — service queue nạp model qua loader chung.
 processor:
   type: "flux2_klein"
   device: ""                    # rỗng → auto (cuda:1 nếu >=2 GPU, else cuda:0)
   num_steps: 4                  # bản distilled được chưng cất về đúng 4 bước
-  # "bf16" (mặc định) | "gguf".
-  #
-  # bf16 là mặc định DÙ nặng hơn trên đĩa, và đây là lựa chọn có chủ đích:
-  # tổng weight bf16 ~16GB (transformer 7.75 + text_encoder Qwen3-4B ~8 +
-  # vae ~0.3) vừa thoải mái trong 24GB của L4, trong khi GGUF giải nén về
-  # bf16 ngay trong forward — tức đổi dung lượng lấy băng thông, mà băng
-  # thông (300 GB/s trên L4) mới là nút cổ chai. GGUF cũng KHÔNG
+  # "gguf" (mặc định) | "bf16". FLUX.2-klein-9B BF16 đầy đủ cần ~29GB VRAM;
+  # dùng GGUF Q4_K_M (~5.9GB transformer) để vừa các GPU 24GB. GGUF giải nén
+  # về bf16 trong forward — tức đổi dung lượng lấy băng thông. GGUF cũng KHÔNG
   # torch.compile được (diffusers#10795).
   #
-  # Chỉ chọn "gguf" khi cần nhồi NHIỀU process worker lên cùng một card:
-  # 2 × bf16 không vừa, 2 × Q4_K_M (~9GB) thì vừa. Quyết bằng số đo của
-  # scripts/benchmark.py, không phải bằng suy đoán.
+  # Không chạy nhiều process 9B trên một L4; quyết định bằng số đo của
+  # scripts/benchmark.py.
   # Thêm lựa chọn thứ ba: "fp8" (optimum-quanto). L4 là Ada (sm_89) nên CÓ
   # tensor core FP8 thật — khác GGUF, không phải giải nén trong forward.
   # CHƯA ĐƯỢC ĐO: cần `uv sync --extra fp8` rồi so bằng
   # `python scripts/spike_flux2.py --modes bf16 fp8` trước khi bật.
-  quantization: "bf16"
+  quantization: "gguf"
   # --- Bộ nhớ VAE -------------------------------------------------------
-  # Cả hai mặc định TẮT vì cấu hình bf16 resident trên L4 đang DƯ VRAM chứ
+  # Cả hai mặc định TẮT; bật khi độ phân giải cao hoặc benchmark chỉ ra cần.
   # không thiếu. Bật khi: chạy trên 1024², hoặc nhồi nhiều process/GPU, hoặc
   # `make benchmark` cho thấy decode là phần đáng kể của VRAM đỉnh.
   vae_tiling: false             # decode latent theo ô — giảm VRAM đỉnh
@@ -162,9 +157,9 @@ processor:
   # ở docker-compose.yml) để dùng trọng số model-fetcher đã kéo sẵn từ GCS —
   # bắt buộc trên production, vì service này KHÔNG đọc biến môi trường
   # GENIMG_*, chỉ đọc field dưới đây từ base.yaml.
-  base_model_local: "/app/models/FLUX.2-klein-4B"
-  # Chỉ được đọc khi quantization="gguf". Để rỗng ở nhánh bf16.
-  transformer_gguf: ""
+  base_model_local: "/app/models/FLUX.2-klein-9B"
+  # Bắt buộc khi quantization="gguf" trong container offline.
+  transformer_gguf: "/app/models/gguf/flux-2-klein-9b-Q4_K_M.gguf"
 
 worker:
   num_ai_workers: 1
@@ -204,7 +199,7 @@ app:
   # KHÔNG commit).
   num_steps: 4                  # GENIMG_NUM_STEPS
   guidance_scale: 1.0           # GENIMG_GUIDANCE_SCALE
-  quantization: "bf16"          # GENIMG_QUANTIZATION — bf16 | gguf | fp8
+  quantization: "gguf"          # GENIMG_QUANTIZATION — gguf | bf16 | fp8
   vae_tiling: false             # GENIMG_VAE_TILING
   vae_slicing: false            # GENIMG_VAE_SLICING
   embed_cache_size: 8           # GENIMG_EMBED_CACHE_SIZE
@@ -216,13 +211,13 @@ app:
 
   # --- Model source (download.py) ---
   model_root: "models"                              # MODEL_ROOT
-  # PHẢI là bản distilled. "FLUX.2-klein-base-4B" là repo KHÁC: không
+  # PHẢI là bản distilled. "FLUX.2-klein-base-9B" là repo KHÁC: không
   # distilled, cần vài chục bước và guidance thật, chậm hơn ~4 lần ở cùng
   # cấu hình. Preflight cảnh báo nếu model_index.json thiếu is_distilled.
-  base_model: "black-forest-labs/FLUX.2-klein-4B"   # GENIMG_BASE_MODEL
+  base_model: "black-forest-labs/FLUX.2-klein-9B"   # GENIMG_BASE_MODEL
   # Chỉ dùng khi quantization="gguf".
-  gguf_repo: "unsloth/FLUX.2-klein-4B-GGUF"         # GENIMG_GGUF_REPO
-  gguf_file: "flux-2-klein-4b-Q8_0.gguf"            # GENIMG_GGUF_FILE
+  gguf_repo: "unsloth/FLUX.2-klein-9B-GGUF"         # GENIMG_GGUF_REPO
+  gguf_file: "flux-2-klein-9b-Q4_K_M.gguf"          # GENIMG_GGUF_FILE
   base_model_local: ""          # GENIMG_BASE_MODEL_LOCAL
   transformer_gguf: ""          # GENIMG_TRANSFORMER_GGUF
 

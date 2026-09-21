@@ -1,6 +1,6 @@
-"""FLUX.2-klein-4B image generation package.
+"""FLUX.2-klein-9B GGUF image generation package.
 
-Sinh ảnh từ chữ và sửa ảnh theo tham chiếu bằng FLUX.2-klein-4B (bản
+Sinh ảnh từ chữ và sửa ảnh theo tham chiếu bằng FLUX.2-klein-9B (bản
 step-distilled 4 bước) qua diffusers. Ship hai entrypoint dùng chung một
 tầng model: Gradio demo (``serve.py``) và RabbitMQ consumer
 (``queue_service``).

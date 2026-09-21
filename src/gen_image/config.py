@@ -36,15 +36,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MODEL_PATHS_ENV = PROJECT_ROOT / ".model_paths.env"
 BASE_YAML = PROJECT_ROOT / "config_setup" / "base.yaml"
 
-# Repo pipeline đầy đủ: transformer bf16 + text_encoder Qwen3-4B + vae +
-# scheduler + tokenizer. Bản **distilled** (4 bước, guidance_scale=1.0).
-# KHÔNG phải ``FLUX.2-klein-base-4B`` — bản đó không distilled, cần nhiều
-# bước hơn và guidance_scale ~4.0, chậm hơn khoảng 4 lần.
-DEFAULT_BASE_MODEL = "black-forest-labs/FLUX.2-klein-4B"
+# Repo pipeline đầy đủ 9B: tokenizer, Qwen3-8B text encoder, VAE, scheduler
+# và ``transformer/config.json``. Transformer được thay bằng file GGUF bên
+# dưới; repo GGUF không chứa các component còn lại mà Flux2KleinPipeline cần.
+# Đây là bản distilled 4 bước, không phải ``klein-base-9B``.
+DEFAULT_BASE_MODEL = "black-forest-labs/FLUX.2-klein-9B"
 
-# Repo GGUF (tuỳ chọn, chỉ dùng khi quantization="gguf").
-DEFAULT_GGUF_REPO = "unsloth/FLUX.2-klein-4B-GGUF"
-DEFAULT_GGUF_FILE = "flux-2-klein-4b-Q8_0.gguf"
+# Chạy 9B qua GGUF là cấu hình mặc định. Q4_K_M (~5.9 GB) là điểm cân bằng
+# thực tế hơn Q8_0 (~10 GB) khi còn phải giữ text encoder 8B và VAE trên GPU.
+DEFAULT_GGUF_REPO = "unsloth/FLUX.2-klein-9B-GGUF"
+DEFAULT_GGUF_FILE = "flux-2-klein-9b-Q4_K_M.gguf"
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,7 @@ def _load_app_yaml() -> dict[str, Any]:
         print(
             f"[gen_image.config] CẢNH BÁO: không thấy {BASE_YAML} — "
             "mọi key trong base.yaml sẽ dùng default hard-code (vd "
-            "quantization='bf16'). Nếu service này cần mount config_setup/, "
+            "quantization='gguf'). Nếu service này cần mount config_setup/, "
             "kiểm tra lại volumes: trong docker-compose.yml.",
             flush=True,
         )
@@ -176,9 +177,8 @@ def load_settings() -> Settings:
         guidance_scale=_as_float(
             pick("GENIMG_GUIDANCE_SCALE", "guidance_scale", 1.0), 1.0
         ),
-        # "bf16" (mặc định) | "gguf". Xem models/loader.py để biết vì sao
-        # bf16 là mặc định trên L4 dù GGUF nhỏ hơn.
-        quantization=str(pick("GENIMG_QUANTIZATION", "quantization", "bf16"))
+        # 9B mặc định GGUF; nạp BF16 cần ~29 GB VRAM và không phù hợp L4 24GB.
+        quantization=str(pick("GENIMG_QUANTIZATION", "quantization", "gguf"))
         .strip()
         .lower(),
         compile_transformer=_as_bool(

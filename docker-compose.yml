@@ -97,7 +97,8 @@ services:
 
       # .model_paths.env ghi đường dẫn tuyệt đối trên host nên vô nghĩa ở đây
       # (đã loại khỏi image qua .dockerignore). Trỏ thẳng vào chỗ mount.
-      GENIMG_BASE_MODEL_LOCAL: /app/models/FLUX.2-klein-4B
+      GENIMG_BASE_MODEL_LOCAL: /app/models/FLUX.2-klein-9B
+      GENIMG_TRANSFORMER_GGUF: /app/models/gguf/flux-2-klein-9b-Q4_K_M.gguf
 
       # Toàn bộ weight đã nằm ở /app/models. Khoá Hub lại để một biến env
       # thiếu không biến thành lần tải 65GB âm thầm giữa production.
@@ -193,7 +194,8 @@ services:
     environment:
       # Model paths giống service Gradio — cùng weights trên ./models.
       # KHÔNG có tác dụng cho gen-image-queue-*, xem ghi chú ở đầu block.
-      GENIMG_BASE_MODEL_LOCAL: /app/models/FLUX.2-klein-4B
+      GENIMG_BASE_MODEL_LOCAL: /app/models/FLUX.2-klein-9B
+      GENIMG_TRANSFORMER_GGUF: /app/models/gguf/flux-2-klein-9b-Q4_K_M.gguf
       HF_HOME: /app/.hf_cache
       HF_HUB_OFFLINE: "1"
       HF_TOKEN: ""

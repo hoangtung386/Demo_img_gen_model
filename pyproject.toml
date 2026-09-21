@@ -1,7 +1,7 @@
 [project]
 name = "gen-image-flux2-klein"
 version = "0.2.0"
-description = "FLUX.2-klein-4B image generation service (RabbitMQ worker + Gradio demo)"
+description = "FLUX.2-klein-9B GGUF image generation service (RabbitMQ worker + Gradio demo)"
 readme = "README.md"
 # Trần < 3.14 giữ lại cho torch: bánh xe torch 2.9.0 chỉ dựng tới cp313.
 # (Trần này KHÔNG còn liên quan tới nunchaku — package đó đã bị gỡ hẳn.)

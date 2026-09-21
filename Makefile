@@ -64,8 +64,8 @@ gpu-info:
 	@echo "Restart policy : $(GENIMG_RESTART_POLICY)"
 
 # Tải weight về ./models. Cache HF đã bị ghim vào project nên không có gì
-# rơi ra ~/.cache. Kéo repo pipeline FLUX.2-klein-4B (~16GB); chỉ kéo thêm
-# file .gguf khi base.yaml đặt quantization: "gguf".
+# rơi ra ~/.cache. Kéo component pipeline FLUX.2-klein-9B cần thiết và
+# transformer GGUF Q4_K_M; không tải transformer BF16 không được dùng.
 download:
 	python scripts/download_model.py
 

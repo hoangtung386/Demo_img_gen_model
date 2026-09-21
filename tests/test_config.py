@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from gen_image.config import DEFAULT_BASE_MODEL, load_settings
+from gen_image.config import (
+    DEFAULT_BASE_MODEL,
+    DEFAULT_GGUF_FILE,
+    DEFAULT_GGUF_REPO,
+    load_settings,
+)
 
 _ENV_VARS = [
     "GENIMG_NUM_STEPS",
@@ -48,8 +53,11 @@ def test_default_settings():
     settings = load_settings()
     assert settings.num_steps == 4
     assert settings.guidance_scale == 1.0
-    assert settings.quantization == "bf16"
     assert settings.compile_transformer is False
+    assert settings.quantization == "gguf"
+    assert settings.base_model == "black-forest-labs/FLUX.2-klein-9B"
+    assert settings.gguf_repo == "unsloth/FLUX.2-klein-9B-GGUF"
+    assert settings.gguf_file == "flux-2-klein-9b-Q4_K_M.gguf"
     assert settings.vae_tiling is False
     assert settings.vae_slicing is False
     assert settings.embed_cache_size == 8
@@ -67,6 +75,8 @@ def test_default_base_model_is_the_distilled_repo():
     """
     assert load_settings().base_model == DEFAULT_BASE_MODEL
     assert "klein-base" not in DEFAULT_BASE_MODEL
+    assert DEFAULT_GGUF_REPO == "unsloth/FLUX.2-klein-9B-GGUF"
+    assert DEFAULT_GGUF_FILE == "flux-2-klein-9b-Q4_K_M.gguf"
 
 
 def test_env_overrides(monkeypatch):

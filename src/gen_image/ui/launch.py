@@ -50,7 +50,7 @@ def main() -> None:
     )
 
     logger.info(
-        "Loading FLUX.2-klein-4B (%d bước, quantization=%s) ...",
+        "Loading FLUX.2-klein-9B (%d bước, quantization=%s) ...",
         settings.num_steps,
         settings.quantization,
     )

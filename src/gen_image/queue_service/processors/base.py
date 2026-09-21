@@ -5,7 +5,7 @@ from PIL import Image
 
 class ImageGenerator(ABC):
     """
-    Abstract image generator. Implementation: FLUX.2-klein-4B.
+    Abstract image generator. Implementation: FLUX.2-klein-9B GGUF.
 
     `generate()` chạy model (image-edit nếu có ảnh điều kiện, text-to-image
     nếu không) và trả (image | None, info_message). None nghĩa model không

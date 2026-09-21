@@ -7,7 +7,8 @@ text_encoder Qwen2.5-VL 15.4 + transformer INT4 10.7 + vae 0.24 — trong khi
 L4 chỉ có 24 GiB. Không cách nào nhét vừa, nên phải xoay: tách text_encoder
 sang GPU thứ hai, hoặc đẩy nó ra CPU rồi chuyển qua lại PCIe mỗi request.
 
-FLUX.2-klein-4B không có vấn đề đó: transformer 7.75 GiB bf16 (4.3 GiB Q8_0)
+FLUX.2-klein-9B chạy bằng GGUF để giảm footprint transformer; phần text
+encoder 8B vẫn là thành phần lớn cần được tính vào VRAM.
 + text_encoder Qwen3-4B ~8 GiB (text-only, KHÔNG phải bản VL) + vae ~0.3 GiB
 ≈ 16 GiB. Vừa L4 với chỗ dư cho activation, nên chiến lược đúng chỉ còn một:
 nhét hết lên GPU và không chuyển đi đâu cả.

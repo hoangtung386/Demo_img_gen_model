@@ -1,5 +1,5 @@
 """
-RabbitMQ queue-based worker service cho FLUX.2-klein-4B.
+RabbitMQ queue-based worker service cho FLUX.2-klein-9B GGUF.
 
 Kiến trúc mirror `edit_any_image`: consumer đa tier (premium + basic 1/2/3)
 → priority router → AI worker chạy pipeline (download → generate → upload) →
