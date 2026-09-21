@@ -99,9 +99,23 @@ def build(mode: str, text_encoder: str = "nf4"):
         config=REPO,
         subfolder="transformer",
     )
-    return Flux2KleinPipeline.from_pretrained(
-        REPO, transformer=transformer, **common
-    )
+    return Flux2KleinPipeline.from_pretrained(REPO, transformer=transformer, **common)
+
+
+def _is_environment_error(exc: Exception) -> bool:
+    """Thiếu package/toolchain trên máy, chứ không phải model nạp không nổi."""
+    text = str(exc).lower()
+    markers = ("ninja", "no module named", "cuda_home", "nvcc", "not installed")
+    return isinstance(exc, ImportError) or any(m in text for m in markers)
+
+
+def _environment_hint(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "ninja" in text:
+        return "uv pip install ninja  (quanto biên dịch extension C++ lúc nạp)"
+    if "quanto" in text:
+        return "uv sync --extra fp8"
+    return "kiểm tra dependency của nhánh này rồi chạy lại"
 
 
 def _reference_images(kind: str) -> list[Image.Image] | None:
@@ -179,10 +193,17 @@ def main() -> int:
             pipe.set_progress_bar_config(disable=True)
             print(f"  load: {time.time() - load_start:.1f}s")
         except Exception as exc:  # noqa: BLE001
-            # Đây là kết quả hợp lệ của spike, không phải sự cố: tiêu chí C
-            # tồn tại chính vì nhánh này có thể xảy ra (diffusers#13001).
             print(f"  ❌ KHÔNG NẠP ĐƯỢC: {type(exc).__name__}: {exc}")
-            print("     → tiêu chí C TRƯỢT cho nhánh này; ghi vào ADR.")
+            # Phân biệt hai loại thất bại — gộp chung là cách ghi vào ADR
+            # một kết luận sai về model. "Thiếu ninja/CUDA toolkit" nói về
+            # MÁY, không nói gì về việc diffusers có nạp nổi model hay
+            # không; ghi nó thành "tiêu chí C trượt" sẽ khiến người đọc ADR
+            # sau này loại bỏ một nhánh hoàn toàn dùng được.
+            if _is_environment_error(exc):
+                print("     → LỖI MÔI TRƯỜNG, không phải kết luận về model.")
+                print(f"     → {_environment_hint(exc)}")
+            else:
+                print("     → tiêu chí C TRƯỢT cho nhánh này; ghi vào ADR.")
             continue
 
         if args.compile:

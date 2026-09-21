@@ -55,6 +55,13 @@ dev = [
 #     uv sync --extra fp8 && python scripts/spike_flux2.py --modes bf16 fp8
 fp8 = [
     "optimum-quanto>=0.2.6",
+    # quanto biên dịch extension C++/CUDA NGAY LÚC NẠP model, và bước đó cần
+    # ninja. Thiếu nó thì `quantization: "fp8"` chết bằng
+    # "RuntimeError: Ninja is required to load C++ extensions" — một thông
+    # báo không hề nhắc tới quanto hay fp8, nên rất dễ bị đọc nhầm thành
+    # "FP8 không chạy được trên máy này". Ghim vào extra để không ai phải
+    # tự đoán ra.
+    "ninja>=1.11",
 ]
 
 [project.scripts]

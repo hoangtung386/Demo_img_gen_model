@@ -89,6 +89,38 @@ Ba kết luận đóng lại ba hướng:
 ⚠️ "Nghi phạm hàng đầu" là giả thuyết, chưa phải kết luận — nó chỉ được xác
 nhận khi `--modes gguf fp8` cho hai con số cạnh nhau.
 
+### 🔴 Mâu thuẫn chưa giải thích được: 10.36s vs 18.1s
+
+Lần chạy spike ngay sau đó, **cùng** L4, **cùng** GGUF Q4_K_M + NF4, **cùng**
+1024²/4 bước/guidance 1.0:
+
+| Đường chạy | Thời gian | Prompt | VRAM đỉnh |
+|---|---:|---|---:|
+| `spike_flux2.py` → `Flux2KleinPipeline` trực tiếp | **10.36s** | ngắn (46 ký tự) | 13.8 GiB |
+| Gradio → `inference.generate` | **18.1s** | demo, ~1840 ký tự | — |
+
+Chênh 7.7s, tức **75%** — lớn hơn bất cứ thứ gì FP8 có thể lấy lại. Đuổi cái
+này trước.
+
+Khác biệt giữa hai đường, theo thứ tự đáng ngờ:
+
+1. **Độ dài prompt.** Service truyền `max_sequence_length=512`; text token
+   đi vào joint-attention cùng 4096 image token, nên prompt dài làm mỗi bước
+   đắt thêm. Giải thích được một phần, khó giải thích hết 75%.
+2. **`callback_on_step_end`.** Service gắn callback mỗi bước để đo
+   (`inference._on_step`). Đo đạc mà làm chậm chính thứ đang đo là một cái
+   bẫy cổ điển.
+3. **Tầng service.** `generate()` còn resize, chuẩn hoá ảnh, ghi log.
+
+Cách tách: `python scripts/benchmark.py --mode t2i` chạy **đúng đường
+service** nhưng với **prompt ngắn**. Kết quả sẽ chỉ thẳng thủ phạm:
+
+| benchmark cho ra | Kết luận |
+|---|---|
+| ~10.5s | prompt dài là thủ phạm → tối ưu prompt demo, không phải model |
+| ~18s | tầng service là thủ phạm → callback/wrapper, xem `inference.generate` |
+
+
 ---
 
 ## 1. Attention — đã dùng SDPA, ĐỪNG thêm xformers
