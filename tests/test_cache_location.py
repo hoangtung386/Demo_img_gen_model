@@ -1,7 +1,7 @@
 """Cache của HuggingFace phải nằm trong project, không rơi ra ~/.cache.
 
 Đây là test chống hồi quy cho một lỗi tốn đĩa rất khó thấy: chỉ cần import
-sai thứ tự (huggingface_hub được import trước imagegen) là HF_HOME quay
+sai thứ tự (huggingface_hub được import trước gen_image) là HF_HOME quay
 về mặc định và hàng chục GB weight rơi vào ~/.cache/huggingface.
 """
 
@@ -42,31 +42,31 @@ def _run(snippet: str, extra_env: dict[str, str] | None = None) -> str:
 
 
 def test_hf_home_is_inside_project():
-    out = _run("import imagegen, os; print(os.environ['HF_HOME'])")
+    out = _run("import gen_image, os; print(os.environ['HF_HOME'])")
     assert Path(out).is_relative_to(PROJECT_ROOT), out
 
 
 def test_hf_home_not_in_user_cache():
-    out = _run("import imagegen, os; print(os.environ['HF_HOME'])")
+    out = _run("import gen_image, os; print(os.environ['HF_HOME'])")
     assert ".cache/huggingface" not in out, out
 
 
 def test_hub_cache_follows_hf_home():
-    out = _run("import imagegen, os; print(os.environ['HF_HUB_CACHE'])")
+    out = _run("import gen_image, os; print(os.environ['HF_HUB_CACHE'])")
     assert Path(out).is_relative_to(PROJECT_ROOT), out
 
 
 def test_explicit_hf_home_is_respected():
     """Docker set HF_HOME riêng (kèm HF_HUB_OFFLINE=1) — không được ghi đè."""
     out = _run(
-        "import imagegen, os; print(os.environ['HF_HOME'])",
+        "import gen_image, os; print(os.environ['HF_HOME'])",
         {"HF_HOME": "/opt/custom-hf"},
     )
     assert out == "/opt/custom-hf"
 
 
 def _download_ast() -> ast.Module:
-    source = (SRC / "imagegen" / "download.py").read_text("utf-8")
+    source = (SRC / "gen_image" / "download.py").read_text("utf-8")
     return ast.parse(source)
 
 
@@ -98,16 +98,12 @@ def test_download_never_calls_login():
 def test_download_uses_local_dir_and_no_removed_kwarg():
     """Mọi lời gọi download phải ghim local_dir và bỏ kwarg đã bị xoá.
 
-    ``local_dir_use_symlinks`` bị gỡ khỏi huggingface_hub 1.x;
-    snapshot_download là keyword-only và không nhận **kwargs, nên truyền vào
-    là TypeError ngay lúc chạy.
-
-    Từ khi thay lõi sang HiDream-O1 chỉ còn MỘT lời gọi tải: model là một
-    repo transformers phẳng, không còn cặp "base pipeline + file transformer
-    Nunchaku rời" nên ``hf_hub_download`` biến mất.
+    ``local_dir_use_symlinks`` bị gỡ khỏi huggingface_hub 1.x; cả
+    snapshot_download lẫn hf_hub_download đều là keyword-only và không nhận
+    **kwargs, nên truyền vào là TypeError ngay lúc chạy.
     """
     tree = _download_ast()
-    targets = {"snapshot_download"}
+    targets = {"snapshot_download", "hf_hub_download"}
     seen = set()
 
     for node in ast.walk(tree):
@@ -123,14 +119,3 @@ def test_download_uses_local_dir_and_no_removed_kwarg():
         assert "local_dir_use_symlinks" not in kwargs, node.func.id
 
     assert seen == targets, f"thiếu lời gọi: {targets - seen}"
-
-
-def test_download_writes_model_paths_env():
-    """download.py phải ghi IMG_MODEL_PATH ra .model_paths.env.
-
-    Thiếu bước này thì lần chạy sau không biết model nằm đâu và lặng lẽ tải
-    lại ~10GB từ Hub.
-    """
-    source = (SRC / "imagegen" / "download.py").read_text("utf-8")
-    assert "IMG_MODEL_PATH=" in source
-    assert ".model_paths.env" in source

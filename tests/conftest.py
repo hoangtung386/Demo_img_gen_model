@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from imagegen.config import DEFAULT_MODEL_REPO, Settings
+from gen_image.config import (
+    DEFAULT_BASE_MODEL,
+    DEFAULT_GGUF_FILE,
+    DEFAULT_GGUF_REPO,
+    Settings,
+)
 
 
 @pytest.fixture
@@ -16,63 +21,23 @@ def base_settings() -> Settings:
     fixture này thì toàn bộ test dùng nó sẽ đổ TypeError.
     """
     return Settings(
+        num_steps=4,
+        guidance_scale=1.0,
+        quantization="bf16",
+        compile_transformer=False,
+        vae_tiling=False,
+        vae_slicing=False,
+        embed_cache_size=8,
         model_root="models",
-        base_model=DEFAULT_MODEL_REPO,
-        model_path_local=None,
-        model_type="full",
-        num_steps=50,
-        guidance_scale=5.0,
-        shift=3.0,
-        scheduler_name="default",
-        width=2048,
-        height=2048,
-        device_override=None,
-        warmup=False,
+        base_model=DEFAULT_BASE_MODEL,
+        gguf_repo=DEFAULT_GGUF_REPO,
+        gguf_file=DEFAULT_GGUF_FILE,
+        offload="resident",
         server_name="0.0.0.0",
         server_port=7860,
         demo_cache=True,
-        # Field tốc độ: giữ ĐÚNG default của dataclass để test recipe đo
-        # được hành vi mặc định, không phải một cấu hình "nhanh" nào đó.
-        attention_mode="auto",
-        dequantize="auto",
-        compile_model=False,
-        cfg_interval_start=0.0,
-        cfg_interval_end=1.0,
-        snap_resolution=True,
-        warmup_steps=2,
+        device_override=None,
+        base_model_local=None,
+        transformer_gguf=None,
+        warmup=False,
     )
-
-
-@pytest.fixture
-def recipe_mod(monkeypatch):
-    """Import ``hidream.inference`` với torch/PIL được stub.
-
-    Module đó import torch chỉ để dùng trong ``generate()``; ``build_recipe``
-    thì thuần Python. Stub để test chạy trên CI không GPU.
-    """
-    import sys
-    import types
-
-    torch = types.ModuleType("torch")
-    torch.inference_mode = lambda: types.SimpleNamespace(
-        __enter__=lambda s: None, __exit__=lambda s, *a: False
-    )
-    torch.randint = lambda *a, **k: types.SimpleNamespace(item=lambda: 123)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-
-    for name in ("einops", "numpy", "tqdm", "torchvision", "diffusers"):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-
-    vendor_pipeline = types.ModuleType("imagegen.hidream.vendor.pipeline")
-    vendor_pipeline.DEFAULT_TIMESTEPS = [999, 500, 8]
-    vendor_pipeline.generate_image = lambda **kw: None
-    monkeypatch.setitem(
-        sys.modules, "imagegen.hidream.vendor.pipeline", vendor_pipeline
-    )
-    monkeypatch.delitem(
-        sys.modules, "imagegen.hidream.inference", raising=False
-    )
-
-    from imagegen.hidream import inference
-
-    return inference
