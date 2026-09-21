@@ -82,44 +82,58 @@ Ba kết luận đóng lại ba hướng:
 
 1. **§5 TAEF2: đóng.** 3% thì có xoá sạch VAE cũng chỉ còn 17.6s.
 2. **§6 cache embed: đóng.** Đã 0.0s, không còn gì để lấy.
-3. **§8 FP8: mở, và là hướng DUY NHẤT còn lại.** 4.3s/bước là cao bất
-   thường cho 9B trên L4; nghi phạm hàng đầu là lớp giải nén GGUF chạy lại
-   ở mỗi bước forward. Đây chính là thứ FP8 bỏ đi.
+3. **§8 FP8: vẫn mở** — nhưng xem phần ngay dưới trước, vì hoá ra
+   4.30s/bước KHÔNG phải do GGUF.
 
-⚠️ "Nghi phạm hàng đầu" là giả thuyết, chưa phải kết luận — nó chỉ được xác
-nhận khi `--modes gguf fp8` cho hai con số cạnh nhau.
+### ✅ Đã giải: thủ phạm là ĐỘ DÀI PROMPT, không phải tầng service
 
-### 🔴 Mâu thuẫn chưa giải thích được: 10.36s vs 18.1s
+Cùng L4, cùng GGUF Q4_K_M + NF4, cùng 1024²/4 bước:
 
-Lần chạy spike ngay sau đó, **cùng** L4, **cùng** GGUF Q4_K_M + NF4, **cùng**
-1024²/4 bước/guidance 1.0:
+| Đường chạy | Prompt | Thời gian | denoise/bước |
+|---|---|---:|---:|
+| `spike_flux2.py` (pipeline trực tiếp) | ngắn | 10.97s | ~2.5s |
+| `benchmark.py` (**đường service**) | ngắn | **10.82s** | **2.46s** |
+| Gradio (đường service) | demo, ~1840 ký tự | **18.1s** | **4.30s** |
 
-| Đường chạy | Thời gian | Prompt | VRAM đỉnh |
-|---|---:|---|---:|
-| `spike_flux2.py` → `Flux2KleinPipeline` trực tiếp | **10.36s** | ngắn (46 ký tự) | 13.8 GiB |
-| Gradio → `inference.generate` | **18.1s** | demo, ~1840 ký tự | — |
+Hai dòng đầu **trùng nhau trong sai số**. Nên:
 
-Chênh 7.7s, tức **75%** — lớn hơn bất cứ thứ gì FP8 có thể lấy lại. Đuổi cái
-này trước.
+- **Tầng service KHÔNG tốn gì.** `generate()`, `callback_on_step_end`,
+  wrapper — tất cả cộng lại dưới 0.2s. Giả thuyết "callback đo đạc làm chậm
+  chính thứ đang đo" đã bị bác bỏ bằng số.
+- **Prompt dài là toàn bộ 7.7s.** +75% trên MỖI bước denoise.
 
-Khác biệt giữa hai đường, theo thứ tự đáng ngờ:
+Vì sao đắt đến thế: FLUX.2 là MMDiT, text token và image token đi **chung**
+một chuỗi joint-attention ở **mọi bước**. Prompt dài không chỉ tốn thêm một
+lần lúc encode (`text` vẫn 0.0s nhờ cache) — nó làm nặng thêm từng bước
+denoise, 4 lần mỗi ảnh.
 
-1. **Độ dài prompt.** Service truyền `max_sequence_length=512`; text token
-   đi vào joint-attention cùng 4096 image token, nên prompt dài làm mỗi bước
-   đắt thêm. Giải thích được một phần, khó giải thích hết 75%.
-2. **`callback_on_step_end`.** Service gắn callback mỗi bước để đo
-   (`inference._on_step`). Đo đạc mà làm chậm chính thứ đang đo là một cái
-   bẫy cổ điển.
-3. **Tầng service.** `generate()` còn resize, chuẩn hoá ảnh, ghi log.
+> 💡 **Đây là đòn bẩy lớn nhất đo được trong dự án, và nó miễn phí.** Lớn
+> hơn FP8, lớn hơn `torch.compile`, lớn hơn TAEF2 — cộng lại. Prompt demo
+> trong `ui/prompts.py` chưa từng được tinh chỉnh cho FLUX.2 (chính
+> `docs/architecture.md` ghi "⚠️ chưa tinh chỉnh lại cho FLUX.2").
 
-Cách tách: `python scripts/benchmark.py --mode t2i` chạy **đúng đường
-service** nhưng với **prompt ngắn**. Kết quả sẽ chỉ thẳng thủ phạm:
+Đo lại sau khi cắt prompt:
 
-| benchmark cho ra | Kết luận |
-|---|---|
-| ~10.5s | prompt dài là thủ phạm → tối ưu prompt demo, không phải model |
-| ~18s | tầng service là thủ phạm → callback/wrapper, xem `inference.generate` |
+```bash
+python scripts/benchmark.py --mode t2i                 # prompt ngắn
+python scripts/benchmark.py --mode t2i --long-prompt   # prompt cỡ tab demo
+```
 
+⚠️ Cắt prompt **đổi ảnh ra**, không phải một tối ưu trong suốt. Phải xem
+bằng mắt xem chất lượng có giữ được không — §4 của chính tài liệu này cảnh
+báo đừng đánh đổi mù.
+
+### 🔴 FP8 qua optimum-quanto: TRƯỢT
+
+```
+RuntimeError: A is not contiguous
+optimum/quanto/tensor/weights/marlin/fp8/qbits.py:37
+```
+
+Kernel Marlin FP8 của quanto đòi input contiguous; `x_embedder` của
+`Flux2Transformer2DModel` đưa vào một view không contiguous. Bug của quanto,
+không phải của FP8 — và diffusers 0.40 đã deprecate cả `QuantoConfig` lẫn
+`QuantoQuantizer`. Backend FP8 đã chuyển sang **torchao** (§8).
 
 ---
 
@@ -251,7 +265,13 @@ thật, không phải một cờ bật. Xem MULTI_PROCESS_WORKERS.md.
 
 ## 8. 🧪 FP8 — đường đổi VRAM-dư-lấy-tốc-độ, CHƯA ĐO
 
-`quantization: "fp8"` dùng `optimum-quanto` qua `QuantoConfig`.
+`quantization: "fp8"` dùng **torchao** với
+`Float8DynamicActivationFloat8WeightConfig` — lượng tử hoá cả activation
+nên matmul chạy thật trên tensor core FP8 của Ada.
+
+> Backend cũ `optimum-quanto` đã **trượt** trên L4 ("A is not contiguous",
+> xem §0b) và bị diffusers deprecate. Giữ lại sau cờ `backend="quanto"` chỉ
+> để tái lập kết quả, đừng chọn.
 
 Đây là lựa chọn đáng thử nhất khi card còn dư VRAM, vì nó thắng GGUF ở
 **hai** điểm cùng lúc:
@@ -276,7 +296,7 @@ FP8 vừa thoải mái, và đúng chỗ 8 GiB đang bỏ không hiện nay.
 **Nhưng chưa ai đo nó trên phần cứng nào.** Trước khi bật trên production:
 
 ```bash
-uv sync --extra fp8
+uv sync --extra fp8      # kéo torchao (+ quanto/ninja cho nhánh cũ)
 python scripts/spike_flux2.py --modes gguf fp8              # so trực tiếp
 python scripts/spike_flux2.py --modes fp8 --compile         # cộng thêm §2
 ```
@@ -312,12 +332,15 @@ Lưu ý `Flux2KleinPipeline` **không có** `enable_vae_tiling()` ở cấp pipe
    §0. `text_encoder_quantization` là knob đầu tiên cần nhìn.
 1. **Đo trước.** `make benchmark` — đọc bảng tỉ trọng giai đoạn. Tối ưu thứ
    không phải nút cổ chai là tốn công vô ích.
-2. **Hạ `output_area`.** Chi phí denoise tỉ lệ với số token latent, tức với
-   diện tích ảnh. 832² thay 1024² là đòn bẩy lớn nhất và không tốn gì.
-3. **Nếu `denoise` áp đảo và card còn dư VRAM → thử `fp8`** (§8). Đây là
-   cách duy nhất VRAM dư đổi được thành tốc độ, và nó mở khoá luôn bước 4.
-4. **Bật `compile_transformer`** sau khi xác nhận không recompile liên tục.
+2. **Cắt ngắn prompt.** ĐÒN BẨY LỚN NHẤT đã đo: prompt demo dài làm mỗi
+   bước denoise đắt thêm **75%** (§0b). Miễn phí về mặt kỹ thuật, nhưng đổi
+   ảnh ra nên phải xem bằng mắt.
+3. **Hạ `output_area`.** Chi phí denoise tỉ lệ với số token latent, tức với
+   diện tích ảnh. 832² thay 1024² là đòn bẩy lớn thứ hai và không tốn gì.
+4. **Nếu `denoise` áp đảo và card còn dư VRAM → thử `fp8`** (§8). Đây là
+   cách duy nhất VRAM dư đổi được thành tốc độ, và nó mở khoá luôn bước 5.
+5. **Bật `compile_transformer`** sau khi xác nhận không recompile liên tục.
    Chỉ có tác dụng ở nhánh `bf16`/`fp8`, KHÔNG có ở `gguf`.
-5. Nếu `text` chiếm tỉ trọng lớn → **nâng `embed_cache_size`**.
-6. Nếu `decode` > 20% → cân nhắc **TAEF2** (§5).
-7. Nếu cần throughput chứ không phải latency → đọc MULTI_PROCESS_WORKERS.md.
+6. Nếu `text` chiếm tỉ trọng lớn → **nâng `embed_cache_size`**.
+7. Nếu `decode` > 20% → cân nhắc **TAEF2** (§5).
+8. Nếu cần throughput chứ không phải latency → đọc MULTI_PROCESS_WORKERS.md.

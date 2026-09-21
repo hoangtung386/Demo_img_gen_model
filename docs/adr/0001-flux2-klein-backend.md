@@ -83,21 +83,31 @@ python scripts/spike_flux2.py --modes fp8 --compile --runs 3
 | A | bf16 chạy được, peak VRAM < 20 GiB | ❌ **không áp dụng ở 9B** | bf16 + NF4 = ~23.3 GiB > 22.5 |
 | B | Latency bf16 ≤ 8s @1024²/4 bước | ❌ **không áp dụng ở 9B** | |
 | C | GGUF load được (không dính #13001) | ✅ **ĐẠT** | Colab L4, Q4_K_M, load 81.9s |
-| D | GGUF nhanh hơn hoặc bằng bf16 | ⬜ chưa đo | GGUF t2i: **10.36s** median (3 lượt) |
+| D | GGUF nhanh hơn hoặc bằng bf16 | ⬜ chưa đo | GGUF t2i: **10.82s** median, 13.7 GiB đỉnh |
 | E | `torch.compile` không recompile mỗi shape | ⬜ chưa đo | chỉ kiểm được ở nhánh fp8/bf16 |
 | F | Ảnh edit hợp lý bằng mắt | ⬜ chưa đo | ảnh t2i đã sinh, chưa ai xem |
-| G | FP8 nhanh hơn GGUF | ⬜ chưa đo | lần chạy đầu trượt vì thiếu `ninja` |
-| H | **Vì sao service chậm hơn spike 75%?** | 🔴 **ĐANG MỞ** | spike 10.36s vs Gradio 18.1s, cùng 1024²/4 bước/GGUF |
+| G | FP8 nhanh hơn GGUF | ⬜ chưa đo | quanto TRƯỢT (bug kernel); torchao chưa chạy |
+| H | Vì sao service chậm hơn spike 75%? | ✅ **ĐÃ GIẢI** | không phải service — là **độ dài prompt** |
 
 **Peak VRAM đo được:** 13.81 GiB (GGUF Q4_K_M + text encoder NF4) trên L4
 22.5 GiB — khớp ước tính ~11.2 GiB weight cộng ~2.6 GiB activation.
 
-**Tiêu chí H là thứ đáng đuổi trước FP8.** Spike gọi thẳng
-`Flux2KleinPipeline` với prompt ngắn; service gọi qua `inference.generate`
-với `prompt_embeds` đã cache, `max_sequence_length=512` và prompt demo dài
-~1840 ký tự. Một trong những khác biệt đó đang tốn 7.7s — nhiều hơn phần
-FP8 có thể lấy lại. Đường tách: `python scripts/benchmark.py --mode t2i`
-chạy ĐÚNG đường service nhưng với prompt ngắn.
+**Kết quả tiêu chí H** (`benchmark.py --mode t2i`, đường service, prompt
+ngắn): **10.82s median**, denoise 2.46s/bước — trùng spike (10.97s) trong
+sai số. Tầng service tốn dưới 0.2s.
+
+Toàn bộ 7.7s chênh lệch đến từ **prompt demo dài ~1840 ký tự**: FLUX.2 là
+MMDiT, text token đi chung chuỗi joint-attention với 4096 image token ở MỌI
+bước, nên prompt dài làm đắt thêm từng bước chứ không chỉ khâu encode.
+2.46s/bước → 4.30s/bước.
+
+Hệ quả cho ADR: **đòn bẩy hiệu năng lớn nhất của dự án không nằm ở lựa chọn
+lượng tử hoá mà ở `ui/prompts.py`** — phần chưa từng được tinh chỉnh lại
+cho FLUX.2.
+
+**Kết quả tiêu chí G** (FP8 qua optimum-quanto): TRƯỢT vì bug kernel
+(`RuntimeError: A is not contiguous`, Marlin FP8), không phải vì FP8. Backend
+đã chuyển sang torchao; chưa đo lại.
 
 **Nếu C trượt:** đặt `quantization: "bf16"` (đã là mặc định) và ghi rõ ở đây
 rằng nhánh GGUF không dùng được với phiên bản diffusers đang ghim. Không cần

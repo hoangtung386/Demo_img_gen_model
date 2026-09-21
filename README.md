@@ -532,14 +532,17 @@ Lưu ý khác:
 
 | Kịch bản @1024², 4 bước | Backend cũ trên L4 (đã đo) | klein-9B GGUF (đã đo) | Mục tiêu |
 | :--- | ---: | ---: | ---: |
-| Text-to-image | 12.9s | **18.1s** | ≤ 6s |
+| Text-to-image, prompt ngắn | 12.9s | **10.82s** | ≤ 6s |
+| Text-to-image, prompt demo dài | 12.9s | **18.1s** | ≤ 6s |
 | Image-edit (1 ảnh) | 16.8s | chưa đo | ≤ 8s |
-| VRAM thường trú | ~23 GB | **14.4 GB** | ≤ 18 GB |
+| VRAM đỉnh | ~23 GB | **13.7 GB** | ≤ 18 GB |
 
-VRAM đạt mục tiêu; tốc độ thì **chậm hơn cả backend cũ**. 95% thời gian nằm
-ở denoise (4.30s/bước), nên nghi phạm là lớp giải nén GGUF chạy lại ở mỗi
-bước forward. Đường kiểm chứng và đường sửa là cùng một thứ:
-`quantization: "fp8"` — xem [PERFORMANCE.md §8](docs/PERFORMANCE.md).
+VRAM đạt mục tiêu, tốc độ thì chưa. Phát hiện quan trọng nhất nằm ở hai dòng
+đầu: **cùng một model, chênh nhau 7.3s chỉ vì độ dài prompt**. FLUX.2 là
+MMDiT nên text token đi chung joint-attention với image token ở mọi bước —
+prompt dài làm đắt thêm từng bước denoise, không chỉ khâu encode. Prompt
+trong `ui/prompts.py` chưa từng được tinh chỉnh cho FLUX.2, và đó hiện là
+đòn bẩy lớn nhất. Chi tiết: [PERFORMANCE.md §0b](docs/PERFORMANCE.md).
 
 Cơ sở của mục tiêu: ComfyUI báo ~1.2s @1024² trên RTX 5090; L4 chậm hơn
 khoảng 4–5× về compute và ~3× về băng thông (300 GB/s). Đây là phép ngoại

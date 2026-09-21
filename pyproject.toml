@@ -54,13 +54,20 @@ dev = [
 # cài thêm khi muốn so FP8 với bf16 trên L4:
 #     uv sync --extra fp8 && python scripts/spike_flux2.py --modes bf16 fp8
 fp8 = [
+    # torchao là backend FP8 CHÍNH. Float8DynamicActivationFloat8WeightConfig
+    # lượng tử hoá cả activation nên matmul chạy thật trên tensor core FP8
+    # của Ada (sm_89).
+    "torchao>=0.9",
+    # optimum-quanto: backend CŨ, giữ lại chỉ để tái lập kết quả đã đo.
+    # Trên Colab L4 nó nổ "RuntimeError: A is not contiguous" trong kernel
+    # Marlin FP8 ngay ở forward đầu tiên, và diffusers 0.40 đã deprecate cả
+    # QuantoConfig lẫn QuantoQuantizer (gỡ ở 1.0). Đừng chọn nhánh này.
     "optimum-quanto>=0.2.6",
     # quanto biên dịch extension C++/CUDA NGAY LÚC NẠP model, và bước đó cần
-    # ninja. Thiếu nó thì `quantization: "fp8"` chết bằng
-    # "RuntimeError: Ninja is required to load C++ extensions" — một thông
-    # báo không hề nhắc tới quanto hay fp8, nên rất dễ bị đọc nhầm thành
-    # "FP8 không chạy được trên máy này". Ghim vào extra để không ai phải
-    # tự đoán ra.
+    # ninja. Thiếu nó thì nhánh quanto chết bằng "RuntimeError: Ninja is
+    # required to load C++ extensions" — một thông báo không hề nhắc tới
+    # quanto hay fp8, nên rất dễ bị đọc nhầm thành "FP8 không chạy được
+    # trên máy này".
     "ninja>=1.11",
 ]
 

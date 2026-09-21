@@ -44,6 +44,35 @@ from gen_image.tuning import (  # noqa: E402
 PROMPT_T2I = "a cat holding a sign that says hello world, photorealistic, 35mm"
 PROMPT_EDIT = "make the lighting warmer and more cinematic"
 
+# Prompt dài cỡ các tab demo trong ui/prompts.py (~1800 ký tự). Tồn tại để
+# ĐO một thứ dễ bị bỏ sót: text token đi vào joint-attention CÙNG 4096 image
+# token ở mọi bước denoise, nên prompt dài làm đắt thêm TỪNG BƯỚC — chứ
+# không chỉ đắt thêm một lần ở khâu encode.
+#
+# Số đo Colab L4 2026-09-21: prompt ngắn 2.46s/bước, prompt demo dài
+# 4.30s/bước. Cùng model, cùng 1024², cùng 4 bước. Đó là +75% từ MỘT thứ
+# duy nhất, và là chênh lệch lớn nhất đo được trong toàn bộ dự án này.
+PROMPT_LONG = (
+    "A photorealistic editorial portrait, 35mm lens, shallow depth of field, "
+    "natural window light falling from the left at a 45 degree angle, soft "
+    "shadows, warm golden hour tone, subject wearing a tailored charcoal wool "
+    "coat over a cream turtleneck, standing in a minimalist concrete interior "
+    "with large floor-to-ceiling windows, shot on Kodak Portra 400, fine film "
+    "grain, no digital sharpening, skin texture preserved with visible pores "
+    "and fine lines, catchlights in both eyes, hair lit from behind creating "
+    "a subtle rim light, background softly out of focus showing a blurred "
+    "city skyline at dusk, composition follows the rule of thirds with the "
+    "subject positioned on the left third, gaze directed slightly off camera "
+    "to the right, expression calm and contemplative, colour grading leans "
+    "toward warm amber in the highlights and cool teal in the shadows, "
+    "overall mood quiet and cinematic, avoid plastic skin, avoid oversaturated "
+    "colours, avoid harsh direct flash, avoid distorted hands, avoid text "
+    "artefacts, avoid watermarks, preserve accurate facial proportions and "
+    "natural neck and ear tones matching the face, match the lighting "
+    "direction of the reference image exactly, do not flatten the subject "
+    "onto the background, blend the edges so no cutout seam is visible"
+)
+
 MODES = ("t2i", "edit", "edit2")
 
 
@@ -110,7 +139,10 @@ def _print_phase_share(label: str, phases: list[dict[str, float]]) -> None:
 
 def _run_mode(pipeline, settings, mode: str, args):
     area = args.area * args.area
-    prompt = PROMPT_T2I if mode == "t2i" else PROMPT_EDIT
+    if args.long_prompt:
+        prompt = PROMPT_LONG
+    else:
+        prompt = PROMPT_T2I if mode == "t2i" else PROMPT_EDIT
     timings: list[float] = []
     phases: list[dict[str, float]] = []
 
@@ -154,6 +186,14 @@ def main() -> int:
         default="all",
         help="t2i | edit (1 ảnh) | edit2 (2 ảnh) | all",
     )
+    parser.add_argument(
+        "--long-prompt",
+        action="store_true",
+        help=(
+            "Dùng prompt dài cỡ các tab demo thay vì prompt ngắn. Chạy hai "
+            "lần (có/không cờ này) để đo chi phí thật của prompt dài."
+        ),
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -188,6 +228,8 @@ def main() -> int:
     print(f"Đặt model        : {settings.offload}")
     print(f"Steps / guidance : {settings.num_steps} / {settings.guidance_scale}")
     print(f"Độ phân giải     : ~{args.area}px")
+    kind = "dài (~1800 ký tự, cỡ tab demo)" if args.long_prompt else "ngắn"
+    print(f"Prompt           : {kind}")
     print("-" * 62)
     print(f"Load model       : {load_s:.1f}s")
     print(f"Warm-up          : {warm_s:.1f}s")

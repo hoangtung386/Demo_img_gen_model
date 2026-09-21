@@ -321,38 +321,69 @@ def _apply_vae_memory_options(pipeline: Flux2KleinPipeline, settings: Settings) 
 
 
 def _load_fp8_transformer(
-    base_model: str, token: str | None
+    base_model: str, token: str | None, backend: str = "torchao"
 ) -> Flux2Transformer2DModel:
-    """Nạp transformer với weight float8 (optimum-quanto).
+    """Nạp transformer với weight float8.
 
     Khác GGUF ở chỗ quan trọng nhất: L4 là kiến trúc Ada (sm_89) nên có
     **tensor core FP8 thật**. GGUF phải giải nén về bf16 ngay trong forward
     — đổi dung lượng lấy băng thông; FP8 thì không.
 
-    ⚠️ **CHƯA ĐO trên phần cứng nào.** Nhánh này thêm vào vì `quantization`
-    vốn đã là một công tắc và L4 có phần cứng phù hợp, nhưng đừng bật trên
-    production trước khi so bằng ``scripts/spike_flux2.py --modes bf16 fp8``.
-    Hai thứ phải kiểm: (1) nó có thật sự nhanh hơn bf16 không, (2) ảnh ra
-    có suy giảm nhìn thấy được không.
+    **Vì sao torchao chứ không phải optimum-quanto** (đo trên Colab L4,
+    2026-09-21): quanto nạp được model nhưng nổ ngay ở forward đầu tiên —
 
-    ``torch.compile`` với nhánh này cũng chưa kiểm — ``maybe_compile`` chỉ
-    chặn GGUF, không chặn fp8.
+        RuntimeError: A is not contiguous
+        optimum/quanto/tensor/weights/marlin/fp8/qbits.py:37
+
+    Kernel Marlin FP8 của quanto đòi input contiguous, còn
+    ``Flux2Transformer2DModel.x_embedder`` đưa vào một view không
+    contiguous. Đây là bug của quanto, không phải của FP8 hay của model.
+    Thêm nữa, diffusers 0.40 đã đánh dấu **deprecated** cả ``QuantoConfig``
+    lẫn ``QuantoQuantizer`` (gỡ ở 1.0), nên sửa vòng qua nó là đầu tư vào
+    một đường sắp biến mất.
+
+    ``Float8DynamicActivationFloat8WeightConfig`` lượng tử hoá **cả
+    activation**, tức matmul chạy thật trên tensor core FP8. Bản
+    weight-only (``Float8WeightOnlyConfig``) thì giải nén weight về bf16
+    trước mỗi matmul — đúng cái chế độ khiến GGUF chậm, nên chọn nó là tự
+    quay lại vạch xuất phát.
+
+    ⚠️ **CHƯA ĐO.** Nhánh quanto đã trượt; nhánh torchao chưa ai chạy.
+    So bằng ``scripts/spike_flux2.py --modes gguf fp8`` trước khi dùng thật.
     """
-    try:
+    if backend == "quanto":
         from diffusers import QuantoConfig
-    except ImportError as exc:  # pragma: no cover - phụ thuộc phiên bản
-        raise RuntimeError(
-            "quantization='fp8' cần QuantoConfig của diffusers."
-        ) from exc
+
+        logger.warning(
+            "quantization='fp8' backend=quanto: đường này ĐÃ TRƯỢT trên L4 "
+            "('A is not contiguous', kernel Marlin) và deprecated trong "
+            "diffusers 0.40. Dùng backend torchao."
+        )
+        quant_config = QuantoConfig(weights_dtype="float8")
+    else:
+        try:
+            from diffusers import TorchAoConfig
+            from torchao.quantization import (
+                Float8DynamicActivationFloat8WeightConfig,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "quantization='fp8' cần torchao. Cài bằng: uv sync --extra fp8"
+            ) from exc
+
+        quant_config = TorchAoConfig(
+            quant_type=Float8DynamicActivationFloat8WeightConfig()
+        )
 
     logger.warning(
-        "quantization='fp8' là nhánh CHƯA ĐƯỢC ĐO. So với bf16 bằng "
-        "scripts/spike_flux2.py trước khi dùng trên production."
+        "quantization='fp8' (backend=%s) là nhánh CHƯA ĐƯỢC ĐO. So với "
+        "gguf bằng scripts/spike_flux2.py trước khi dùng trên production.",
+        backend,
     )
     return Flux2Transformer2DModel.from_pretrained(
         base_model,
         subfolder="transformer",
-        quantization_config=QuantoConfig(weights_dtype="float8"),
+        quantization_config=quant_config,
         torch_dtype=DTYPE,
         token=token,
     )
