@@ -13,7 +13,7 @@ from diffusers import (
     GGUFQuantizationConfig,
 )
 
-from ..config import Settings
+from ..config import PROJECT_ROOT, Settings
 from .placement import place
 
 logger = logging.getLogger("gen-image")
@@ -25,6 +25,12 @@ DTYPE = torch.bfloat16
 
 # Các giá trị hợp lệ của `quantization`. 9B mặc định chạy GGUF.
 QUANTIZATIONS = ("bf16", "gguf", "fp8")
+
+
+def _model_root(settings: Settings) -> Path:
+    """Resolve ``model_root`` exactly as the downloader does."""
+    root = Path(settings.model_root)
+    return root if root.is_absolute() else PROJECT_ROOT / root
 
 
 def _warn_remote(what: str, target: str) -> None:
@@ -48,8 +54,13 @@ def _warn_remote(what: str, target: str) -> None:
 
 def resolve_base_model(settings: Settings) -> str:
     """Trả thư mục pipeline local, hoặc Hub id nếu chưa tải về."""
-    if settings.base_model_local:
-        local = Path(settings.base_model_local)
+    configured = settings.base_model_local
+    # ``.model_paths.env`` is an optimisation, not a prerequisite.  A source
+    # checkout on a server commonly has ``models/`` copied in but not that
+    # generated env file (the exact failure in the reported log).
+    discovered = _model_root(settings) / "FLUX.2-klein-9B"
+    if configured or (discovered / "model_index.json").is_file():
+        local = Path(configured) if configured else discovered
         if not (local / "model_index.json").is_file():
             raise FileNotFoundError(
                 f"GENIMG_BASE_MODEL_LOCAL trỏ tới {local} nhưng không thấy "
@@ -59,14 +70,24 @@ def resolve_base_model(settings: Settings) -> str:
         logger.info("Dùng base pipeline local: %s", local)
         return str(local)
 
+    if not settings.hf_token:
+        raise RuntimeError(
+            "Không tìm thấy base pipeline local. FLUX.2-klein-9B là repo "
+            "gated nên không thể chạy với request ẩn danh. Đặt "
+            "GENIMG_BASE_MODEL_LOCAL tới thư mục có model_index.json (và "
+            "mount/copy models/), hoặc đặt HF_TOKEN/app.hf_token sau khi "
+            "đã được cấp quyền trên Hugging Face."
+        )
     _warn_remote("Base pipeline", settings.base_model)
     return settings.base_model
 
 
 def resolve_gguf_path(settings: Settings) -> str:
     """Trả đường dẫn file .gguf local, hoặc URL blob trên Hub."""
-    if settings.transformer_gguf:
-        local = Path(settings.transformer_gguf)
+    configured = settings.transformer_gguf
+    discovered = _model_root(settings) / "gguf" / settings.gguf_file
+    if configured or discovered.is_file():
+        local = Path(configured) if configured else discovered
         if not local.is_file():
             raise FileNotFoundError(
                 f"GENIMG_TRANSFORMER_GGUF trỏ tới {local} nhưng file không "
@@ -106,6 +127,7 @@ def _load_gguf_transformer(
         torch_dtype=DTYPE,
         config=base_model,
         subfolder="transformer",
+        token=settings.hf_token,
     )
 
 
@@ -145,14 +167,16 @@ def load_pipeline(settings: Settings, device: str) -> Flux2KleinPipeline:
     if settings.quantization == "gguf":
         kwargs["transformer"] = _load_gguf_transformer(settings, base_model)
     elif settings.quantization == "fp8":
-        kwargs["transformer"] = _load_fp8_transformer(base_model)
+        kwargs["transformer"] = _load_fp8_transformer(base_model, settings.hf_token)
     elif settings.quantization != "bf16":
         raise ValueError(
             f"quantization không hợp lệ: {settings.quantization!r}. "
             f"Chọn một trong: {' | '.join(QUANTIZATIONS)}."
         )
 
-    pipeline = Flux2KleinPipeline.from_pretrained(base_model, **kwargs)
+    pipeline = Flux2KleinPipeline.from_pretrained(
+        base_model, token=settings.hf_token, **kwargs
+    )
     _warn_if_not_distilled(pipeline, base_model)
     _apply_vae_memory_options(pipeline, settings)
     place(pipeline, settings.offload, device)
@@ -187,7 +211,9 @@ def _apply_vae_memory_options(pipeline: Flux2KleinPipeline, settings: Settings) 
         logger.info("VAE slicing: BẬT (chỉ có tác dụng khi batch > 1)")
 
 
-def _load_fp8_transformer(base_model: str) -> Flux2Transformer2DModel:
+def _load_fp8_transformer(
+    base_model: str, token: str | None
+) -> Flux2Transformer2DModel:
     """Nạp transformer với weight float8 (optimum-quanto).
 
     Khác GGUF ở chỗ quan trọng nhất: L4 là kiến trúc Ada (sm_89) nên có
@@ -219,6 +245,7 @@ def _load_fp8_transformer(base_model: str) -> Flux2Transformer2DModel:
         subfolder="transformer",
         quantization_config=QuantoConfig(weights_dtype="float8"),
         torch_dtype=DTYPE,
+        token=token,
     )
 
 

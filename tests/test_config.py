@@ -25,6 +25,7 @@ _ENV_VARS = [
     "GENIMG_SERVER_NAME",
     "GENIMG_PORT",
     "GENIMG_DEVICE",
+    "HF_TOKEN",
     "GENIMG_BASE_MODEL_LOCAL",
     "GENIMG_TRANSFORMER_GGUF",
     "MODEL_ROOT",
@@ -63,6 +64,7 @@ def test_default_settings():
     assert settings.embed_cache_size == 8
     assert settings.offload == "resident"
     assert settings.server_port == 7860
+    assert settings.hf_token is None
     assert settings.base_model_id == settings.base_model
 
 
@@ -103,6 +105,13 @@ def test_yaml_provides_values(monkeypatch):
     assert settings.num_steps == 8
     assert settings.quantization == "gguf"
     assert settings.offload == "model_offload"
+
+
+def test_hf_token_from_yaml_is_available_to_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "gen_image.config._load_app_yaml", lambda: {"hf_token": "hf_yaml_token"}
+    )
+    assert load_settings().hf_token == "hf_yaml_token"
 
 
 def test_env_beats_yaml(monkeypatch):

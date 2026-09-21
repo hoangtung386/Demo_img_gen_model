@@ -68,6 +68,7 @@ class Settings:
     server_port: int
     demo_cache: bool
     device_override: str | None
+    hf_token: str | None
     base_model_local: str | None
     transformer_gguf: str | None
     warmup: bool
@@ -213,6 +214,11 @@ def load_settings() -> Settings:
         demo_cache=str(pick("GENIMG_DEMO_CACHE", "demo_cache", "true")).strip().lower()
         != "false",
         device_override=pick_optional("GENIMG_DEVICE", "device"),
+        # Repo base của FLUX.2 là gated. Giữ token trong Settings để đường
+        # runtime dùng được cùng credential mà download-model đã dùng; trước
+        # đây ``app.hf_token`` chỉ có tác dụng lúc tải model, còn run-app vẫn
+        # gửi request ẩn danh và nhận 401.
+        hf_token=pick_optional("HF_TOKEN", "hf_token"),
         base_model_local=pick_optional("GENIMG_BASE_MODEL_LOCAL", "base_model_local"),
         transformer_gguf=pick_optional("GENIMG_TRANSFORMER_GGUF", "transformer_gguf"),
         # Trả trước chi phí lượt sinh ảnh đầu tiên lúc khởi động thay vì bắt

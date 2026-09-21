@@ -28,8 +28,24 @@ def test_resolve_base_model_missing_index_raises(base_settings, tmp_path):
         resolve_base_model(settings)
 
 
-def test_resolve_base_model_falls_back_to_hub(base_settings):
-    assert resolve_base_model(base_settings) == DEFAULT_BASE_MODEL
+def test_resolve_base_model_without_local_or_token_fails_fast(base_settings):
+    with pytest.raises(RuntimeError, match="gated"):
+        resolve_base_model(base_settings)
+
+
+def test_resolve_base_model_falls_back_to_hub_with_token(base_settings):
+    settings = dataclasses.replace(base_settings, hf_token="test-token")
+    assert resolve_base_model(settings) == DEFAULT_BASE_MODEL
+
+
+def test_resolve_base_model_discovers_default_local_path(
+    base_settings, tmp_path, monkeypatch
+):
+    base = tmp_path / "models" / "FLUX.2-klein-9B"
+    base.mkdir(parents=True)
+    (base / "model_index.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("gen_image.models.loader.PROJECT_ROOT", tmp_path)
+    assert resolve_base_model(base_settings) == str(base)
 
 
 def test_resolve_gguf_local(base_settings, tmp_path):
@@ -57,6 +73,16 @@ def test_resolve_gguf_falls_back_to_hub_blob_url(base_settings):
     assert url.startswith("https://huggingface.co/")
     assert base_settings.gguf_repo in url
     assert url.endswith(base_settings.gguf_file)
+
+
+def test_resolve_gguf_discovers_default_local_path(
+    base_settings, tmp_path, monkeypatch
+):
+    gguf = tmp_path / "models" / "gguf" / base_settings.gguf_file
+    gguf.parent.mkdir(parents=True)
+    gguf.write_bytes(b"")
+    monkeypatch.setattr("gen_image.models.loader.PROJECT_ROOT", tmp_path)
+    assert resolve_gguf_path(base_settings) == str(gguf)
 
 
 # --------------------------------------------------------------------------

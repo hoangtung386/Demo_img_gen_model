@@ -37,6 +37,7 @@ def base_settings() -> Settings:
         server_port=7860,
         demo_cache=True,
         device_override=None,
+        hf_token=None,
         base_model_local=None,
         transformer_gguf=None,
         warmup=False,
