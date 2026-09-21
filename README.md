@@ -76,6 +76,22 @@ cp config_setup/base.example.yaml config_setup/base.yaml
 > (env THẮNG YAML) — docker-compose set env nên không phá deploy hiện tại.
 > `.env` cũ vẫn được nạp nếu tồn tại (backward-compat).
 
+### Token HuggingFace — ba nguồn, theo thứ tự
+
+`black-forest-labs/FLUX.2-klein-9B` là repo **gated**. Repo GGUF của Unsloth
+chỉ chứa transformer, nên nó **không** thay thế được repo gated: text
+encoder, VAE, scheduler và tokenizer vẫn phải lấy từ đó.
+
+1. env `HF_TOKEN` — chắc ăn nhất, dùng cho CI/Colab
+2. `app.hf_token` trong `base.yaml`
+3. token do `huggingface_hub.login()` ghi ra đĩa
+
+Nguồn (3) được đọc ở **cả hai** vị trí: `$HF_HOME/token` (đã ghim vào
+`models/.hf`) lẫn `~/.cache/huggingface/token` (mặc định của hub). Không có
+nhánh thứ hai đó thì một `login()` chạy trong notebook cell sẽ báo thành
+công nhưng `download-model` vẫn đi ẩn danh và nhận 401 — hai tiến trình nhìn
+vào hai file khác nhau.
+
 Các key quan trọng trong `app:` (đọc bởi cả `download` và `serve`):
 
 | Biến | Mặc định | Ý nghĩa |

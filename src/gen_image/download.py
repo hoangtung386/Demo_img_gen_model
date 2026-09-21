@@ -13,7 +13,13 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
-from .config import PROJECT_ROOT, Settings, _load_app_yaml, load_settings
+from .config import (
+    PROJECT_ROOT,
+    Settings,
+    _load_app_yaml,
+    _stored_hf_token,
+    load_settings,
+)
 
 logger = logging.getLogger("download")
 
@@ -38,17 +44,22 @@ def _resolve_model_root(settings: Settings) -> Path:
 
 
 def _resolve_token() -> str | None:
-    """HF token: env THẮNG, fallback về ``app.hf_token`` trong base.yaml.
+    """HF token: env THẮNG base.yaml THẮNG token đã ``login()`` ra đĩa.
 
-    Truyền token thẳng vào từng lời gọi thay vì ``login()``: login() ghi
-    token ra ``$HF_HOME/token`` + stored_tokens, tức là tạo state trên đĩa
-    ngoài ý muốn và làm token dính lại trên máy sau khi tải xong.
+    Truyền token thẳng vào từng lời gọi thay vì tự gọi ``login()``: login()
+    ghi token ra ``$HF_HOME/token`` + stored_tokens, tức là tạo state trên
+    đĩa ngoài ý muốn và làm token dính lại trên máy sau khi tải xong.
+
+    Nhưng NẾU người dùng đã tự gọi ``login()`` thì phải tôn trọng — và
+    không thể trông chờ hub tự tìm thấy, vì ``HF_HOME`` đã bị ghim sang
+    ``models/.hf``. ``_stored_hf_token()`` đọc cả hai chỗ; xem docstring
+    của nó để biết vì sao đây từng là một chế độ hỏng rất khó nhìn ra.
     """
     token = os.getenv("HF_TOKEN", "").strip() or None
     if token:
         return token
     raw = _load_app_yaml().get("hf_token", "")
-    return str(raw or "").strip() or None
+    return str(raw or "").strip() or _stored_hf_token()
 
 
 def download(settings: Settings) -> None:
@@ -56,8 +67,12 @@ def download(settings: Settings) -> None:
     hf_token = _resolve_token()
     if not hf_token:
         logger.warning(
-            "HF_TOKEN rỗng. %s có thể là repo gated và cần token sau khi "
-            "đã chấp nhận license trên HuggingFace.",
+            "Không tìm thấy HF token ở BẤT KỲ nguồn nào (env HF_TOKEN, "
+            "app.hf_token trong base.yaml, hay file token do login() ghi "
+            "ra). %s là repo GATED — request ẩn danh sẽ nhận 401. Lưu ý "
+            "repo GGUF chỉ chứa transformer; text encoder/VAE/scheduler "
+            "vẫn phải lấy từ repo gated này. Cách chắc ăn nhất: "
+            "HF_TOKEN=hf_xxx uv run download-model",
             settings.base_model,
         )
 

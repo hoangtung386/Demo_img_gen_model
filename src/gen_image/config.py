@@ -114,6 +114,38 @@ def _load_app_yaml() -> dict[str, Any]:
     return app if isinstance(app, dict) else {}
 
 
+def _stored_hf_token() -> str | None:
+    """Token do ``huggingface_hub.login()`` ghi ra đĩa, nếu có.
+
+    Vì sao phải tự đi tìm thay vì để hub tự lo: ``gen_image/__init__`` ghim
+    ``HF_HOME`` vào ``models/.hf`` để cache không rơi ra ngoài project. Hệ
+    quả phụ là hub chỉ còn nhìn vào ``models/.hf/token``, trong khi
+    ``login()`` chạy ở một tiến trình KHÁC (cell notebook, hay một shell
+    trước đó) đã ghi vào ``~/.cache/huggingface/token`` theo mặc định của nó.
+
+    Đây là một lần deploy thật đã mất thời gian vì nó: người dùng chạy
+    ``login()``, thấy "Đăng nhập thành công", rồi ``download-model`` vẫn đi
+    ẩn danh và nhận 401 từ repo gated. Cả hai bên đều "đúng", chỉ là nhìn
+    vào hai file khác nhau.
+
+    Nên đọc CẢ HAI đường: chỗ đã ghim, và chỗ mặc định của hub.
+    """
+    candidates = []
+    hf_home = os.getenv("HF_HOME")
+    if hf_home:
+        candidates.append(Path(hf_home) / "token")
+    candidates.append(Path.home() / ".cache" / "huggingface" / "token")
+
+    for path in candidates:
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if token:
+            return token
+    return None
+
+
 def _as_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -231,7 +263,10 @@ def load_settings() -> Settings:
         # runtime dùng được cùng credential mà download-model đã dùng; trước
         # đây ``app.hf_token`` chỉ có tác dụng lúc tải model, còn run-app vẫn
         # gửi request ẩn danh và nhận 401.
-        hf_token=pick_optional("HF_TOKEN", "hf_token"),
+        # Thứ tự: env → base.yaml → token đã login() ra đĩa. Nhánh cuối để
+        # `huggingface_hub.login()` trong một notebook cell thật sự có tác
+        # dụng — xem _stored_hf_token().
+        hf_token=pick_optional("HF_TOKEN", "hf_token") or _stored_hf_token(),
         base_model_local=pick_optional("GENIMG_BASE_MODEL_LOCAL", "base_model_local"),
         transformer_gguf=pick_optional("GENIMG_TRANSFORMER_GGUF", "transformer_gguf"),
         # Trả trước chi phí lượt sinh ảnh đầu tiên lúc khởi động thay vì bắt

@@ -162,3 +162,47 @@ def test_base_model_local_priority(monkeypatch):
     monkeypatch.setenv("GENIMG_BASE_MODEL", "some/Remote")
     settings = load_settings()
     assert settings.base_model_id == "/tmp/local"
+
+
+# --------------------------------------------------------------------------
+# token đã login() ra đĩa — xem config._stored_hf_token
+# --------------------------------------------------------------------------
+
+
+def test_stored_token_read_from_pinned_hf_home(tmp_path, monkeypatch):
+    """HF_HOME bị ghim vào models/.hf; token login() ghi ở đó phải đọc được."""
+    from gen_image.config import _stored_hf_token
+
+    (tmp_path / "token").write_text("hf_pinned\n", encoding="utf-8")
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    assert _stored_hf_token() == "hf_pinned"
+
+
+def test_stored_token_falls_back_to_hub_default_path(tmp_path, monkeypatch):
+    """Chế độ hỏng thật: login() chạy ở tiến trình chưa ghim HF_HOME.
+
+    Token nằm ở ~/.cache/huggingface/token trong khi service nhìn vào
+    models/.hf/token — phải đọc được cả hai, nếu không sẽ đi ẩn danh và
+    nhận 401 từ repo gated dù người dùng đã đăng nhập thành công.
+    """
+    from gen_image.config import _stored_hf_token
+
+    home = tmp_path / "home"
+    default = home / ".cache" / "huggingface"
+    default.mkdir(parents=True)
+    (default / "token").write_text("hf_default", encoding="utf-8")
+
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    monkeypatch.setenv("HF_HOME", str(pinned))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+
+    assert _stored_hf_token() == "hf_default"
+
+
+def test_stored_token_absent_returns_none(tmp_path, monkeypatch):
+    from gen_image.config import _stored_hf_token
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+    assert _stored_hf_token() is None
