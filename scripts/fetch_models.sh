@@ -5,12 +5,12 @@
 # HF_TOKEN, không cần accept license lúc deploy, không cần .env.
 #
 # Biến môi trường:
-#   IMG_MODELS_URI      gs://bucket/path — BẮT BUỘC. Xem phần "Dạng URI".
-#   IMG_MODELS_DIR      thư mục đích (mặc định /models)
-#   IMG_GCS_KEY_FILE    key download model (config_setup/credentials/
+#   GENIMG_MODELS_URI      gs://bucket/path — BẮT BUỘC. Xem phần "Dạng URI".
+#   GENIMG_MODELS_DIR      thư mục đích (mặc định /models)
+#   GENIMG_GCS_KEY_FILE    key download model (config_setup/credentials/
 #                       model-download-key.json). Bỏ trống thì tự dò (_find_key)
-#   IMG_MODELS_REQUIRE  các đường dẫn tương đối phải tồn tại sau khi giải nén
-#   IMG_MODELS_FORCE    "true" => tải lại kể cả khi đã có sẵn
+#   GENIMG_MODELS_REQUIRE  các đường dẫn tương đối phải tồn tại sau khi giải nén
+#   GENIMG_MODELS_FORCE    "true" => tải lại kể cả khi đã có sẵn
 #
 # Dạng URI — quyết định cách tải:
 #   *.tar.zst  stream thẳng: cat | zstd -d | tar -x. KHÔNG có file archive
@@ -32,8 +32,8 @@ if command -v python3 >/dev/null 2>&1 && [ -f "$_SELF_DIR/config_env.py" ]; then
     eval "$(python3 "$_SELF_DIR/config_env.py" 2>/dev/null || true)"
 fi
 
-DIR="${IMG_MODELS_DIR:-/models}"
-REQUIRE="${IMG_MODELS_REQUIRE:-HiDream-O1-Image-SDNQ-uint4/config.json HiDream-O1-Image-SDNQ-uint4/model.safetensors.index.json}"
+DIR="${GENIMG_MODELS_DIR:-/models}"
+REQUIRE="${GENIMG_MODELS_REQUIRE:-FLUX.2-klein-4B/model_index.json}"
 MARKER="$DIR/.fetched-from"
 STAGE="$DIR/.extract-tmp"
 
@@ -48,13 +48,13 @@ _find_key() {
     # là chỗ người dùng thả file key sau khi clone, nên phải dò tới.
     # Key DOWNLOAD model nội bộ = config_setup/credentials/model-download-key.json
     # (mount vào /credentials trong container). KHÁC key upload bucket user.
-    for c in "${IMG_GCS_KEY_FILE:-}" \
+    for c in "${GENIMG_GCS_KEY_FILE:-}" \
              /credentials/model-download-key.json \
              /project/config_setup/credentials/model-download-key.json \
-             /project/<key-file>.json; do
+             /project/ai-asset-amb.json; do
         if [ -n "$c" ] && [ -f "$c" ]; then echo "$c"; return; fi
     done
-    for c in /project/<key-file>*.json /project/*service-account*.json; do
+    for c in /project/ai-asset*.json /project/*service-account*.json; do
         if [ -f "$c" ]; then echo "$c"; return; fi
     done
 }
@@ -98,19 +98,19 @@ _flatten_into() {
     rm -rf "$src"
 }
 
-[ -n "${IMG_MODELS_URI:-}" ] || die "chưa đặt IMG_MODELS_URI (gs://bucket/...)"
-URI="$IMG_MODELS_URI"
+[ -n "${GENIMG_MODELS_URI:-}" ] || die "chưa đặt GENIMG_MODELS_URI (gs://bucket/...)"
+URI="$GENIMG_MODELS_URI"
 
 mkdir -p "$DIR"
 
 # --- Đã có sẵn thì thôi -----------------------------------------------------
 # Container này chạy lại mỗi lần `docker compose up`. Không có bước này thì
 # mỗi lần restart service là một lần tải hàng chục GB.
-if [ "${IMG_MODELS_FORCE:-false}" != "true" ] &&
+if [ "${GENIMG_MODELS_FORCE:-false}" != "true" ] &&
    [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$URI" ]; then
     missing=$(_missing)
     if [ -z "$missing" ]; then
-        log "Model đã có sẵn từ $URI — bỏ qua. (IMG_MODELS_FORCE=true để tải lại)"
+        log "Model đã có sẵn từ $URI — bỏ qua. (GENIMG_MODELS_FORCE=true để tải lại)"
         exit 0
     fi
     log "Marker khớp nhưng thiếu:$missing — tải lại."
@@ -181,12 +181,12 @@ esac
 
 # --- Kiểm tra ---------------------------------------------------------------
 # Tải xong không có nghĩa là đúng cây thư mục: archive đóng sai gốc sẽ cho
-# /models/models/HiDream-... và app chỉ báo lỗi sau 2 phút nạp model.
+# /models/models/FLUX.2-... và app chỉ báo lỗi sau 2 phút nạp model.
 missing=$(_missing)
 if [ -n "$missing" ]; then
     log "Cây thư mục thực tế ở $DIR:"
     ls -la "$DIR" >&2 || true
-    die "thiếu:$missing — kiểm tra archive có chứa HiDream-O1-Image-SDNQ-uint4/ không."
+    die "thiếu:$missing — kiểm tra archive có chứa FLUX.2-klein-4B/ không."
 fi
 
 printf '%s' "$URI" > "$MARKER"

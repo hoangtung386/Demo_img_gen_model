@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Xuất khối ``app:`` của config_setup/base.yaml ra dạng ``IMG_KEY=value``.
+"""Xuất khối ``app:`` của config_setup/base.yaml ra dạng ``GENIMG_KEY=value``.
 
 Cho script bash (fetch_models.sh, pack_models.sh) đọc config từ base.yaml —
 nguồn config DUY NHẤT — thay vì trùng lặp trong nhiều nơi. Chỉ IN các key
@@ -29,38 +29,26 @@ _BASE_YAML = _ROOT / "config_setup" / "base.yaml"
 
 # Map yaml key (trong khối app:) → tên biến môi trường script bash mong đợi.
 _YAML_TO_ENV = {
-    # Tham số sinh ảnh
-    "num_steps": "IMG_NUM_STEPS",
-    "model_type": "IMG_MODEL_TYPE",
-    "guidance_scale": "IMG_GUIDANCE_SCALE",
-    "shift": "IMG_SHIFT",
-    "scheduler_name": "IMG_SCHEDULER",
-    "width": "IMG_WIDTH",
-    "height": "IMG_HEIGHT",
-    # Runtime
-    "device": "IMG_DEVICE",
-    "warmup": "IMG_WARMUP",
-    "warmup_steps": "IMG_WARMUP_STEPS",
-    "demo_cache": "IMG_DEMO_CACHE",
-    # Tốc độ
-    "attention_mode": "IMG_ATTENTION_MODE",
-    "dequantize": "IMG_DEQUANTIZE",
-    "compile_model": "IMG_COMPILE",
-    "cfg_interval_start": "IMG_CFG_INTERVAL_START",
-    "cfg_interval_end": "IMG_CFG_INTERVAL_END",
-    "snap_resolution": "IMG_SNAP_RESOLUTION",
-    # Nguồn model
+    "num_steps": "GENIMG_NUM_STEPS",
+    "guidance_scale": "GENIMG_GUIDANCE_SCALE",
+    "quantization": "GENIMG_QUANTIZATION",
+    "compile_transformer": "GENIMG_COMPILE",
+    "device": "GENIMG_DEVICE",
+    "offload": "GENIMG_OFFLOAD",
+    "warmup": "GENIMG_WARMUP",
+    "demo_cache": "GENIMG_DEMO_CACHE",
     "model_root": "MODEL_ROOT",
-    "base_model": "IMG_BASE_MODEL",
-    "model_path": "IMG_MODEL_PATH",
-    # Server
-    "server_name": "IMG_SERVER_NAME",
-    "server_port": "IMG_PORT",
-    # Tải trọng số
+    "base_model": "GENIMG_BASE_MODEL",
+    "gguf_repo": "GENIMG_GGUF_REPO",
+    "gguf_file": "GENIMG_GGUF_FILE",
+    "base_model_local": "GENIMG_BASE_MODEL_LOCAL",
+    "transformer_gguf": "GENIMG_TRANSFORMER_GGUF",
+    "server_name": "GENIMG_SERVER_NAME",
+    "server_port": "GENIMG_PORT",
     "hf_token": "HF_TOKEN",
-    "models_uri": "IMG_MODELS_URI",
-    "gcs_key_file": "IMG_GCS_KEY_FILE",
-    "models_force": "IMG_MODELS_FORCE",
+    "models_uri": "GENIMG_MODELS_URI",
+    "gcs_key_file": "GENIMG_GCS_KEY_FILE",
+    "models_force": "GENIMG_MODELS_FORCE",
 }
 
 
