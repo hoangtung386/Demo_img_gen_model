@@ -9,11 +9,17 @@ lời được câu hỏi "diffusers có nạp nổi model này không" một c�
 tầng wiring của service. Lẫn hai thứ vào nhau thì một lỗi config sẽ trông
 giống hệt một lỗi model.
 
-    python scripts/spike_flux2.py                 # bf16+gguf, t2i+edit
-    python scripts/spike_flux2.py --modes bf16 fp8     # so FP8 với bf16
-    python scripts/spike_flux2.py --modes bf16
+    python scripts/spike_flux2.py                      # gguf+fp8, t2i+edit
+    python scripts/spike_flux2.py --modes gguf fp8     # so FP8 với GGUF
     python scripts/spike_flux2.py --compile            # thêm nhánh compile
     python scripts/spike_flux2.py --runs 5 --out /tmp/spike
+    python scripts/spike_flux2.py --text-encoder bf16  # cần GPU >= 40GB
+
+⚠️ **Text encoder mặc định NF4.** Qwen3-8B ở bf16 là 16.4 GiB; cộng
+transformer thì KHÔNG mode nào vừa L4 24GB — kể cả GGUF. Script này trước
+đây dựng text encoder bf16 ở mọi mode, nên trên L4 nó OOM trước khi đo được
+gì, tức cổng chặn không thể qua được trên đúng phần cứng đích. Xem
+``gen_image/models/loader.py::build_text_encoder_quant_config``.
 
 Tiêu chí nghiệm thu — xem docs/REFACTOR_FLUX2_KLEIN_4B.md §3.
 """
@@ -41,8 +47,15 @@ GUIDANCE = 1.0
 STEPS = 4
 
 
-def build(mode: str):
-    """Dựng pipeline cho ``mode`` ∈ {bf16, gguf, fp8}."""
+def build(mode: str, text_encoder: str = "nf4"):
+    """Dựng pipeline cho ``mode`` ∈ {bf16, gguf, fp8}.
+
+    ``text_encoder`` đi qua chính hàm của service
+    (``build_text_encoder_quant_config``) — ngoại lệ có chủ đích với nguyên
+    tắc "không dùng gen_image" ở đầu file. Lý do: đây là thứ quyết định
+    pipeline có vừa VRAM hay không, và chép lại nó ở đây thì hai bên sẽ
+    trôi khỏi nhau đúng vào lúc nguy hiểm nhất.
+    """
     from diffusers import (
         Flux2KleinPipeline,
         Flux2Transformer2DModel,
@@ -50,8 +63,15 @@ def build(mode: str):
         QuantoConfig,
     )
 
+    from gen_image.models.loader import build_text_encoder_quant_config
+
+    quant = build_text_encoder_quant_config(text_encoder)
+    common: dict[str, object] = {"torch_dtype": torch.bfloat16}
+    if quant is not None:
+        common["quantization_config"] = quant
+
     if mode == "bf16":
-        return Flux2KleinPipeline.from_pretrained(REPO, torch_dtype=torch.bfloat16)
+        return Flux2KleinPipeline.from_pretrained(REPO, **common)
 
     if mode == "fp8":
         # L4 là Ada (sm_89) — CÓ tensor core FP8 thật, nên khác GGUF ở chỗ
@@ -65,7 +85,7 @@ def build(mode: str):
             torch_dtype=torch.bfloat16,
         )
         return Flux2KleinPipeline.from_pretrained(
-            REPO, transformer=transformer, torch_dtype=torch.bfloat16
+            REPO, transformer=transformer, **common
         )
 
     # config= + subfolder= là BẮT BUỘC, không phải cho gọn: thiếu chúng,
@@ -80,7 +100,7 @@ def build(mode: str):
         subfolder="transformer",
     )
     return Flux2KleinPipeline.from_pretrained(
-        REPO, transformer=transformer, torch_dtype=torch.bfloat16
+        REPO, transformer=transformer, **common
     )
 
 
@@ -124,13 +144,19 @@ def main() -> int:
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=["bf16", "gguf"],
+        default=["gguf", "fp8"],
         choices=["bf16", "gguf", "fp8"],
     )
     parser.add_argument("--kinds", nargs="+", default=["t2i", "edit"])
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--out", type=Path, default=Path("/tmp"))
+    parser.add_argument(
+        "--text-encoder",
+        default="nf4",
+        choices=["nf4", "int8", "bf16"],
+        help="Lượng tử hoá text encoder Qwen3-8B. bf16 cần GPU >= 40GB.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -139,7 +165,8 @@ def main() -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"Repo: {REPO}\n")
+    print(f"Repo: {REPO}")
+    print(f"Text encoder: {args.text_encoder}\n")
 
     summary: dict[str, dict[str, float]] = {}
     for mode in args.modes:
@@ -148,7 +175,7 @@ def main() -> int:
         torch.cuda.reset_peak_memory_stats()
         try:
             load_start = time.time()
-            pipe = build(mode).to("cuda")
+            pipe = build(mode, args.text_encoder).to("cuda")
             pipe.set_progress_bar_config(disable=True)
             print(f"  load: {time.time() - load_start:.1f}s")
         except Exception as exc:  # noqa: BLE001

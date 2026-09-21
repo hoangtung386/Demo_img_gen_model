@@ -527,17 +527,19 @@ Lưu ý khác:
 
 ### Tốc độ
 
-> ⚠️ **Chưa có số đo nào trên FLUX.2-klein.** Máy phát triển dùng cho lần
-> chuyển backend này là RTX 3080 10GB — không đủ VRAM cho bf16 (~16 GB).
-> Bảng dưới là **mục tiêu**, không phải kết quả. Chạy
-> `python scripts/spike_flux2.py` rồi `make benchmark` trên L4 và điền vào
-> [ADR 0001](docs/adr/0001-flux2-klein-backend.md) §5.
+> ⚠️ **Đã có số đo đầu tiên trên L4, và nó CHƯA ĐẠT mục tiêu.** Chi tiết +
+> phân tích tỉ trọng: [docs/PERFORMANCE.md §0b](docs/PERFORMANCE.md).
 
-| Kịch bản @1024², 4 bước | Backend cũ trên L4 (đã đo) | FLUX.2-klein (mục tiêu) |
-| :--- | ---: | ---: |
-| Text-to-image | 12.9s | **≤ 6s** |
-| Image-edit (1 ảnh) | 16.8s | **≤ 8s** |
-| VRAM đỉnh | ~23 GB | **≤ 18 GB** |
+| Kịch bản @1024², 4 bước | Backend cũ trên L4 (đã đo) | klein-9B GGUF (đã đo) | Mục tiêu |
+| :--- | ---: | ---: | ---: |
+| Text-to-image | 12.9s | **18.1s** | ≤ 6s |
+| Image-edit (1 ảnh) | 16.8s | chưa đo | ≤ 8s |
+| VRAM thường trú | ~23 GB | **14.4 GB** | ≤ 18 GB |
+
+VRAM đạt mục tiêu; tốc độ thì **chậm hơn cả backend cũ**. 95% thời gian nằm
+ở denoise (4.30s/bước), nên nghi phạm là lớp giải nén GGUF chạy lại ở mỗi
+bước forward. Đường kiểm chứng và đường sửa là cùng một thứ:
+`quantization: "fp8"` — xem [PERFORMANCE.md §8](docs/PERFORMANCE.md).
 
 Cơ sở của mục tiêu: ComfyUI báo ~1.2s @1024² trên RTX 5090; L4 chậm hơn
 khoảng 4–5× về compute và ~3× về băng thông (300 GB/s). Đây là phép ngoại

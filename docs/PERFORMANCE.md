@@ -22,7 +22,7 @@ dụng, và một số **có hại thật sự**.
 | Tiny VAE (TAESD / TAEF2) | ⏸️ **đo trước** | xem §5 |
 | Warm model pool | ✅ **đã có** | model resident + warm-up + cache embed — §6 |
 | Continuous batching / Triton | ❌ ngoài phạm vi | xem §7 |
-| **FP8** | 🧪 **mới thêm, chưa đo** | xem §8 |
+| **FP8** | 🧪 **chưa đo — ứng viên số 1 để nhanh hơn** | xem §8 |
 | **VAE tiling / slicing** | 🧪 **mới thêm, mặc định tắt** | xem §9 |
 | **Nén text encoder (NF4)** | ✅ **đã có, MẶC ĐỊNH BẬT** | đòn bẩy VRAM lớn nhất ở bản 9B — xem §0 |
 
@@ -38,8 +38,16 @@ Bản 9B có **hai** component lớn, và chúng nén bằng hai knob khác nhau
 | transformer | ~18 GiB | `quantization` | `gguf` Q4_K_M → 5.9 GiB |
 | VAE | 0.3 GiB | — | không nén |
 
-Tổng ở cấu hình mặc định: **~11.2 GiB**, dư hơn 10 GiB cho activation trên
-L4 24GB, giữ được `offload: "resident"`.
+Tổng ở cấu hình mặc định: **~11.2 GiB**, giữ được `offload: "resident"`.
+
+> **"L4 24GB" thực tế là bao nhiêu?** Trên Colab, `nvidia-smi` báo **22.5
+> GiB** khả dụng — phần còn lại thuộc về driver và ECC. Mọi ngưỡng trong tài
+> liệu này tính theo 22.5, không phải 24.
+
+**Dư VRAM KHÔNG tự biến thành tốc độ.** Card rảnh 8 GiB không làm denoise
+nhanh hơn một mili-giây nào; nó chỉ là điều kiện cần để đổi sang một cấu
+hình *khác* nhanh hơn. Đúng một đường đổi có thật ở đây — bỏ GGUF sang FP8
+— xem §8.
 
 > 🔴 **Cạm bẫy đã làm hỏng một lần deploy thật.** Đặt `quantization: "gguf"`
 > nhưng để `text_encoder_quantization: "bf16"` thì tổng là **22.6 GiB** —
@@ -49,6 +57,37 @@ L4 24GB, giữ được `offload: "resident"`.
 
 Toàn bộ con số "~16 GiB tổng, L4 dư VRAM" trong các bản tài liệu cũ thuộc về
 **klein-4B** và không còn đúng.
+
+---
+
+## 0b. Số đo thật đầu tiên trên L4 (2026-09-21)
+
+Colab L4 22.5 GiB, cấu hình mặc định (transformer GGUF Q4_K_M + text encoder
+NF4 + resident), Gradio t2i, prompt đã nằm trong cache embed:
+
+```
+⚡ GPU 18.1s = denoise 17.2s (4.30s/bước) + text 0.0s (cache)
+             + prep 0.4s + decode 0.5s     | 1024×1024 · 4 bước
+VRAM: 14.4 / 22.5 GiB
+```
+
+| Giai đoạn | Thời gian | Tỉ trọng | Kết luận |
+|---|---:|---:|---|
+| denoise | 17.2s | **95%** | mọi nỗ lực tối ưu phải nhắm vào đây |
+| decode (VAE) | 0.5s | 3% | **TAEF2 (§5) không đáng** — ngưỡng là 20% |
+| text encode | 0.0s | 0% | cache embed (§6) đang chạy đúng; không cần đụng |
+| prep | 0.4s | 2% | nhiễu |
+
+Ba kết luận đóng lại ba hướng:
+
+1. **§5 TAEF2: đóng.** 3% thì có xoá sạch VAE cũng chỉ còn 17.6s.
+2. **§6 cache embed: đóng.** Đã 0.0s, không còn gì để lấy.
+3. **§8 FP8: mở, và là hướng DUY NHẤT còn lại.** 4.3s/bước là cao bất
+   thường cho 9B trên L4; nghi phạm hàng đầu là lớp giải nén GGUF chạy lại
+   ở mỗi bước forward. Đây chính là thứ FP8 bỏ đi.
+
+⚠️ "Nghi phạm hàng đầu" là giả thuyết, chưa phải kết luận — nó chỉ được xác
+nhận khi `--modes gguf fp8` cho hai con số cạnh nhau.
 
 ---
 
@@ -178,23 +217,41 @@ Nhưng gom nhiều request khác nhau vào một batch đòi hỏi chúng **cùn
 — mà shape ở đây suy từ tỉ lệ ảnh người dùng. Đây là một thay đổi kiến trúc
 thật, không phải một cờ bật. Xem MULTI_PROCESS_WORKERS.md.
 
-## 8. 🧪 FP8 — mới thêm, CHƯA ĐO
+## 8. 🧪 FP8 — đường đổi VRAM-dư-lấy-tốc-độ, CHƯA ĐO
 
 `quantization: "fp8"` dùng `optimum-quanto` qua `QuantoConfig`.
 
-Khác GGUF ở chỗ quan trọng nhất: **L4 là Ada (sm_89) nên có tensor core FP8
-thật**. GGUF phải giải nén về bf16 ngay trong forward — đổi dung lượng lấy
-băng thông. FP8 thì không.
+Đây là lựa chọn đáng thử nhất khi card còn dư VRAM, vì nó thắng GGUF ở
+**hai** điểm cùng lúc:
 
-Nhưng **chưa ai đo nó trên phần cứng nào**. Trước khi bật trên production:
+1. **Không giải nén trong forward.** L4 là Ada (sm_89) nên có tensor core
+   FP8 thật. GGUF Q4_K_M phải bung weight về bf16 ở mỗi lần forward, mỗi
+   bước, mỗi request — đổi dung lượng lấy băng thông, mà băng thông
+   (300 GB/s trên L4) mới là nút cổ chai.
+2. **`torch.compile` chạy được.** GGUF thì không (§2, diffusers#10795). Nên
+   FP8 mở khoá luôn cả §2, hai tối ưu cộng dồn chứ không phải chọn một.
+
+Ngân sách VRAM (text encoder NF4, trần 22.5 GiB):
+
+| transformer | Weight | Vừa? | Giải nén trong forward? | compile? |
+|---|---:|---|---|---|
+| `gguf` Q4_K_M | ~11.2 GiB | ✅ | **có** | ❌ |
+| `fp8` | ~14.3 GiB | ✅ | không | ✅ |
+| `bf16` | ~23.3 GiB | ❌ | không | ✅ |
+
+FP8 vừa thoải mái, và đúng chỗ 8 GiB đang bỏ không hiện nay.
+
+**Nhưng chưa ai đo nó trên phần cứng nào.** Trước khi bật trên production:
 
 ```bash
 uv sync --extra fp8
-python scripts/spike_flux2.py --modes bf16 fp8   # trên L4
+python scripts/spike_flux2.py --modes gguf fp8              # so trực tiếp
+python scripts/spike_flux2.py --modes fp8 --compile         # cộng thêm §2
 ```
 
-Hai câu hỏi phải trả lời: (1) có nhanh hơn bf16 thật không, (2) ảnh ra có
-suy giảm nhìn thấy được không. `torch.compile` kết hợp fp8 cũng chưa kiểm.
+Ba câu hỏi phải trả lời: (1) có nhanh hơn GGUF thật không, (2) ảnh ra có suy
+giảm nhìn thấy được không, (3) compile có hội tụ (số lần recompile → 0) hay
+recompile mỗi shape.
 
 ## 9. 🧪 VAE tiling / slicing — mới thêm, mặc định tắt
 
@@ -225,7 +282,10 @@ Lưu ý `Flux2KleinPipeline` **không có** `enable_vae_tiling()` ở cấp pipe
    không phải nút cổ chai là tốn công vô ích.
 2. **Hạ `output_area`.** Chi phí denoise tỉ lệ với số token latent, tức với
    diện tích ảnh. 832² thay 1024² là đòn bẩy lớn nhất và không tốn gì.
-3. **Bật `compile_transformer`** sau khi xác nhận không recompile liên tục.
-4. Nếu `text` chiếm tỉ trọng lớn → **nâng `embed_cache_size`**.
-5. Nếu `decode` > 20% → cân nhắc **TAEF2** (§5).
-6. Nếu cần throughput chứ không phải latency → đọc MULTI_PROCESS_WORKERS.md.
+3. **Nếu `denoise` áp đảo và card còn dư VRAM → thử `fp8`** (§8). Đây là
+   cách duy nhất VRAM dư đổi được thành tốc độ, và nó mở khoá luôn bước 4.
+4. **Bật `compile_transformer`** sau khi xác nhận không recompile liên tục.
+   Chỉ có tác dụng ở nhánh `bf16`/`fp8`, KHÔNG có ở `gguf`.
+5. Nếu `text` chiếm tỉ trọng lớn → **nâng `embed_cache_size`**.
+6. Nếu `decode` > 20% → cân nhắc **TAEF2** (§5).
+7. Nếu cần throughput chứ không phải latency → đọc MULTI_PROCESS_WORKERS.md.

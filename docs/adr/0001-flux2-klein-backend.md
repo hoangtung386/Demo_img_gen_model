@@ -64,21 +64,29 @@ Phase 0 tồn tại để xác nhận nó.
 Máy phát triển dùng cho refactor này là **RTX 3080 10GB**, không đủ VRAM cho
 bf16 (~16 GB). Không có số đo nào ở đây được lấy từ phần cứng thật.
 
+> **Cập nhật 2026-09-21:** ADR này viết cho bản **4B**. Dự án đã chuyển sang
+> **9B**, nơi text encoder là Qwen3-8B (16.4 GiB bf16) chứ không phải
+> Qwen3-4B (8 GiB). Mọi con số VRAM trong §2/§3 ở trên thuộc về 4B và đã bị
+> thay thế — xem [PERFORMANCE.md §0](../PERFORMANCE.md). Tiêu chí A và B
+> dưới đây (đặt quanh giả định bf16 là mặc định) không còn áp dụng: ở 9B,
+> bf16 không vừa L4 dù text encoder đã nén.
+
 Chạy trên L4 rồi điền bảng dưới:
 
 ```bash
-python scripts/spike_flux2.py --runs 3            # bf16 + gguf, t2i + edit
-python scripts/spike_flux2.py --modes bf16 --compile
+python scripts/spike_flux2.py --modes gguf fp8 --runs 3
+python scripts/spike_flux2.py --modes fp8 --compile --runs 3
 ```
 
 | # | Tiêu chí | Kết quả | Số đo |
 |---|---|---|---|
-| A | bf16 chạy được, peak VRAM < 20 GiB | ⬜ chưa đo | |
-| B | Latency bf16 ≤ 8s @1024²/4 bước | ⬜ chưa đo | |
-| C | GGUF Q8_0 load được (không dính #13001) | ⬜ chưa đo | |
-| D | GGUF nhanh hơn hoặc bằng bf16 | ⬜ chưa đo | |
-| E | `torch.compile` không recompile mỗi shape | ⬜ chưa đo | |
+| A | bf16 chạy được, peak VRAM < 20 GiB | ❌ **không áp dụng ở 9B** | bf16 + NF4 = ~23.3 GiB > 22.5 |
+| B | Latency bf16 ≤ 8s @1024²/4 bước | ❌ **không áp dụng ở 9B** | |
+| C | GGUF load được (không dính #13001) | ✅ **ĐẠT** | Colab L4, Q4_K_M, 2026-09-21 |
+| D | GGUF nhanh hơn hoặc bằng bf16 | ⬜ chưa đo | GGUF: **18.1s** (4.30s/bước) @1024² |
+| E | `torch.compile` không recompile mỗi shape | ⬜ chưa đo | chỉ kiểm được ở nhánh fp8/bf16 |
 | F | Ảnh edit hợp lý bằng mắt | ⬜ chưa đo | |
+| G | FP8 nhanh hơn GGUF | ⬜ **chưa đo — câu hỏi mở chính** | |
 
 **Nếu C trượt:** đặt `quantization: "bf16"` (đã là mặc định) và ghi rõ ở đây
 rằng nhánh GGUF không dùng được với phiên bản diffusers đang ghim. Không cần
