@@ -4,15 +4,14 @@ Mục tiêu là đo BROKER + đường vào, không đo GPU: script chỉ publis
 chọn drain `queue_out`), nên chạy được từ máy dev không có card.
 
     # Smoke: 30s, 5 msg/s, tự tạo topology trên vhost trống.
-    # Password lấy từ env IMG_RMQ_PASSWORD (hoặc config_setup/base.yaml) —
+    # Password lấy từ env GENIMG_RMQ_PASSWORD (hoặc config_setup/base.yaml) —
     # đừng viết secret vào lệnh, nó nằm lại trong shell history.
-    export IMG_RMQ_PASSWORD='...'
-    python scripts/loadtest_queue.py --host <broker-host> --vhost gen-image \
-        --user <username> --declare --rate 5 --duration 30
+    export GENIMG_RMQ_PASSWORD='...'
+    python scripts/loadtest_queue.py --host <broker-host> --vhost <vhost> \
+        --user <user> --declare --rate 5 --duration 30
 
     # Đẩy tải: 200 msg/s trong 2 phút, 4 connection, tắt publisher confirm
-    python scripts/loadtest_queue.py --rate 200 --duration 120 --workers 4
-    --no-confirm
+    python scripts/loadtest_queue.py --rate 200 --duration 120 --workers 4 --no-confirm
 
     # Đo end-to-end (cần worker đang chạy): đọc luôn queue_out để tính latency
     python scripts/loadtest_queue.py --rate 2 --duration 300 --drain-out
@@ -24,12 +23,12 @@ message ra. Premium để 1 phần (~9%) cho có traffic ưu tiên; đặt `--mi
 nếu chỉ muốn test nhánh basic, hoặc `--mix 1:0:0:0` để test riêng premium.
 
 Payload dựng theo đúng hợp đồng ở
-imagegen/queue_service/messaging/schemas.py (_REQUIRED_FIELDS +
+gen_image/queue_service/messaging/schemas.py (_REQUIRED_FIELDS +
 validate_inbound). Sửa schema bên đó thì phải sửa `build_payload()` ở đây,
 nếu không worker sẽ reply BAD_REQUEST cho toàn bộ tải test.
 
-Script cố tình CHỈ phụ thuộc pika + pyyaml (không import imagegen) để
-chạy được trong venv nhẹ trên máy bắn tải — package imagegen kéo theo
+Script cố tình CHỈ phụ thuộc pika + pyyaml (không import gen_image) để
+chạy được trong venv nhẹ trên máy bắn tải — package gen_image kéo theo
 torch qua queue_service/__init__.py.
 """
 
@@ -92,7 +91,7 @@ def load_rmq_section(path: Path) -> dict:
 def resolve(cli_value, env_name: str, cfg: dict, cfg_key: str, default):
     """Thứ tự ưu tiên: CLI > biến môi trường > base.yaml > default.
 
-    Secret (password) vì thế không cần nằm trong repo: export IMG_RMQ_PASSWORD
+    Secret (password) vì thế không cần nằm trong repo: export GENIMG_RMQ_PASSWORD
     hoặc để trong base.yaml (đã bị .gitignore chặn).
     """
     if cli_value is not None:
@@ -138,8 +137,8 @@ def parse_mix(raw: str) -> dict[str, int]:
     parts = raw.split(":")
     if len(parts) != len(TIERS):
         raise argparse.ArgumentTypeError(
-            f"--mix cần đúng {len(TIERS)} số theo thứ tự {':'.join(TIERS)}, "
-            f"nhận {raw!r}"
+            f"--mix cần đúng {len(TIERS)} số theo thứ tự {':'.join(TIERS)}, nhận "
+            f"{raw!r}"
         )
     try:
         values = [int(p) for p in parts]
@@ -157,9 +156,14 @@ def parse_mix(raw: str) -> dict[str, int]:
 # ────────────────────────── payload ──────────────────────────
 
 
-def build_payload(
-    msg_id: str, images: list[str], seed: int, num_steps: int
-) -> dict:
+def _payload_label(args) -> str:
+    """Mô tả loại payload cho dòng tóm tắt lúc khởi động."""
+    if not args.images:
+        return "text-to-image"
+    return f"image-edit {len(args.images)} ảnh"
+
+
+def build_payload(msg_id: str, images: list[str], seed: int, num_steps: int) -> dict:
     """Một inbound message hợp lệ theo validate_inbound().
 
     `images` rỗng → text-to-image (QwenImagePipeline); có URL → image-edit,
@@ -191,9 +195,7 @@ class Stats:
     """Counter dùng chung giữa các publisher thread + thread drain."""
 
     lock: threading.Lock = field(default_factory=threading.Lock)
-    published: dict[str, int] = field(
-        default_factory=lambda: dict.fromkeys(TIERS, 0)
-    )
+    published: dict[str, int] = field(default_factory=lambda: dict.fromkeys(TIERS, 0))
     failed: int = 0
     unroutable: int = 0
     publish_latencies: list[float] = field(default_factory=list)
@@ -202,6 +204,8 @@ class Stats:
     replies: int = 0
     reply_status: dict[int, int] = field(default_factory=dict)
     e2e_latencies: list[float] = field(default_factory=list)
+    # Mốc (perf_counter) mỗi reply về — dùng tính throughput thật của worker.
+    reply_times: list[float] = field(default_factory=list)
     started_at: float = field(default_factory=time.perf_counter)
 
     def record_publish(
@@ -225,9 +229,8 @@ class Stats:
     def record_reply(self, msg_id: str, status_code: int) -> None:
         with self.lock:
             self.replies += 1
-            self.reply_status[status_code] = (
-                self.reply_status.get(status_code, 0) + 1
-            )
+            self.reply_status[status_code] = self.reply_status.get(status_code, 0) + 1
+            self.reply_times.append(time.perf_counter())
             sent = self.inflight.pop(msg_id, None)
             if sent is not None:
                 self.e2e_latencies.append(time.perf_counter() - sent)
@@ -237,12 +240,7 @@ class Stats:
 
     def snapshot(self) -> tuple[int, dict[str, int], int, int]:
         with self.lock:
-            return (
-                self.total(),
-                dict(self.published),
-                self.failed,
-                self.replies,
-            )
+            return self.total(), dict(self.published), self.failed, self.replies
 
 
 def percentiles(samples: list[float]) -> str:
@@ -288,9 +286,7 @@ def declare_topology(channel, args) -> None:
     )
     channel.queue_declare(queue=args.queue_out, durable=True)
     channel.queue_bind(
-        exchange=args.exchange,
-        queue=args.queue_out,
-        routing_key=args.queue_out_key,
+        exchange=args.exchange, queue=args.queue_out, routing_key=args.queue_out_key
     )
     for queue_name in args.queues.values():
         channel.queue_declare(queue=queue_name, durable=True)
@@ -306,18 +302,14 @@ def purge_queues(conn, args) -> None:
     channel — dùng chung một channel thì queue thứ hai trở đi sẽ fail theo dây
     chuyền dù nó vẫn tồn tại.
     """
-    targets = list(args.queues.values()) + (
-        [args.queue_out] if args.purge_out else []
-    )
+    targets = list(args.queues.values()) + ([args.queue_out] if args.purge_out else [])
     for queue_name in targets:
         channel = conn.channel()
         try:
             result = channel.queue_purge(queue=queue_name)
             count = getattr(result.method, "message_count", "?")
             print(f"[purge] {queue_name}: {count} message đã xoá")
-        except (
-            AMQPError
-        ) as exc:  # queue chưa tồn tại → bỏ qua, không phải lỗi test
+        except AMQPError as exc:  # queue chưa tồn tại → bỏ qua, không phải lỗi test
             print(f"[purge] {queue_name}: bỏ qua ({exc.__class__.__name__})")
         finally:
             if channel.is_open:
@@ -330,9 +322,7 @@ def purge_queues(conn, args) -> None:
 def publish_worker(
     worker_id: int, args, stats: Stats, stop: threading.Event, budget
 ) -> None:
-    """Một thread = một connection.
-
-    pika KHÔNG thread-safe nên không share channel giữa các thread.
+    """Một thread = một connection (pika KHÔNG thread-safe, không share channel).
 
     Mỗi worker đi riêng một chu kỳ WRR nhưng lệch pha theo worker_id, để N
     worker cộng lại vẫn ra đúng tỉ lệ --mix mà không cùng lúc bắn vào một tier.
@@ -385,8 +375,7 @@ def publish_worker(
                     routing_key=queue_name,
                     body=body,
                     properties=pika.BasicProperties(
-                        # persistent, giống publisher của service
-                        delivery_mode=2,
+                        delivery_mode=2,  # persistent, giống publisher của service
                         content_type="application/json",
                         message_id=msg_id,
                         timestamp=int(time.time()),
@@ -427,7 +416,7 @@ def publish_worker(
             pass
 
 
-def drain_worker(args, stats: Stats, stop: threading.Event) -> None:
+def drain_worker(args, stats: Stats, drain_stop: threading.Event) -> None:
     """Đọc queue_out để đo end-to-end + phổ status_code.
 
     CẢNH BÁO: consume ở đây là LẤY MẤT message khỏi queue_out. Chỉ bật trên
@@ -441,7 +430,7 @@ def drain_worker(args, stats: Stats, stop: threading.Event) -> None:
         for method, _props, body in channel.consume(
             queue=args.queue_out, inactivity_timeout=0.5, auto_ack=True
         ):
-            if stop.is_set():
+            if drain_stop.is_set():
                 break
             if method is None:  # inactivity tick — vòng lại để check stop
                 continue
@@ -453,7 +442,7 @@ def drain_worker(args, stats: Stats, stop: threading.Event) -> None:
             except (ValueError, TypeError):
                 stats.record_reply("", -1)
     except Exception as exc:
-        if not stop.is_set():
+        if not drain_stop.is_set():
             print(f"[drain] lỗi: {exc!r}", file=sys.stderr)
     finally:
         try:
@@ -470,12 +459,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Bắn tải vào inbound queue của gen-image queue service.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    conn = p.add_argument_group("broker (CLI > env IMG_RMQ_* > base.yaml)")
+    conn = p.add_argument_group("broker (CLI > env GENIMG_RMQ_* > base.yaml)")
     conn.add_argument(
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG,
-        help="file config lấy mặc định",
+        "--config", type=Path, default=DEFAULT_CONFIG, help="file config lấy mặc định"
     )
     conn.add_argument("--host")
     conn.add_argument("--port", type=int)
@@ -489,22 +475,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rate", type=float, default=10.0, help="msg/s tổng; 0 = bắn hết sức"
     )
     load.add_argument(
-        "--duration",
-        type=float,
-        default=30.0,
-        help="giây; 0 = chạy tới khi đủ --count",
+        "--duration", type=float, default=30.0, help="giây; 0 = chạy tới khi đủ --count"
     )
     load.add_argument(
-        "--count",
-        type=int,
-        default=0,
-        help="tổng số message; 0 = không giới hạn",
+        "--count", type=int, default=0, help="tổng số message; 0 = không giới hạn"
     )
     load.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="số connection publish song song",
+        "--workers", type=int, default=1, help="số connection publish song song"
     )
     load.add_argument(
         "--mix",
@@ -515,10 +492,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     load.add_argument(
         "--no-confirm",
         action="store_true",
-        help=(
-            "tắt publisher confirm (nhanh hơn nhiều, không chắc "
-            "broker đã nhận)"
-        ),
+        help="tắt publisher confirm (nhanh hơn nhiều, không chắc broker đã nhận)",
     )
 
     payload = p.add_argument_group("payload")
@@ -539,19 +513,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--seed", type=int, default=-1, help="-1 = random mỗi lần sinh ảnh"
     )
     payload.add_argument(
-        "--num-steps",
-        type=int,
-        default=0,
-        help="0 = dùng default của processor",
+        "--num-steps", type=int, default=0, help="0 = dùng default của processor"
     )
 
     ops = p.add_argument_group("topology / đo đạc")
     ops.add_argument(
         "--declare",
         action="store_true",
-        help=(
-            "tạo exchange + queue (tương đương topology_mode declare_minimal)"
-        ),
+        help="tạo exchange + queue (tương đương topology_mode declare_minimal)",
     )
     ops.add_argument(
         "--direct-to-queue",
@@ -559,14 +528,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="publish qua default exchange thay vì exchange của service",
     )
     ops.add_argument(
-        "--purge",
-        action="store_true",
-        help="xoá sạch 4 inbound queue TRƯỚC khi bắn",
+        "--purge", action="store_true", help="xoá sạch 4 inbound queue TRƯỚC khi bắn"
     )
     ops.add_argument(
-        "--purge-out",
-        action="store_true",
-        help="purge cả queue_out (đi kèm --purge)",
+        "--purge-out", action="store_true", help="purge cả queue_out (đi kèm --purge)"
     )
     ops.add_argument(
         "--drain-out",
@@ -577,18 +542,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--drain-grace",
         type=float,
         default=15.0,
-        help="giây chờ thêm sau khi ngừng bắn, cho reply cuối về (tối đa 60)",
+        help="giây chờ thêm sau khi ngừng bắn, cho reply cuối về (tối đa 900)",
     )
     ops.add_argument(
-        "--report-interval",
-        type=float,
-        default=5.0,
-        help="giây giữa 2 dòng progress",
+        "--report-interval", type=float, default=5.0, help="giây giữa 2 dòng progress"
     )
     ops.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="in kế hoạch + payload mẫu rồi thoát",
+        "--dry-run", action="store_true", help="in kế hoạch + payload mẫu rồi thoát"
     )
 
     args = p.parse_args(argv)
@@ -604,26 +564,20 @@ def finalize_args(args: argparse.Namespace) -> argparse.Namespace:
         # từ base.example.yaml để tool vẫn chạy được ngay sau khi clone.
         cfg = load_rmq_section(EXAMPLE_CONFIG)
 
-    args.host = resolve(args.host, "IMG_RMQ_HOST", cfg, "host", "localhost")
-    args.port = int(resolve(args.port, "IMG_RMQ_PORT", cfg, "port", 5672))
-    args.user = resolve(args.user, "IMG_RMQ_USER", cfg, "user", "guest")
+    args.host = resolve(args.host, "GENIMG_RMQ_HOST", cfg, "host", "localhost")
+    args.port = int(resolve(args.port, "GENIMG_RMQ_PORT", cfg, "port", 5672))
+    args.user = resolve(args.user, "GENIMG_RMQ_USER", cfg, "user", "guest")
     args.password = resolve(
-        args.password, "IMG_RMQ_PASSWORD", cfg, "password", "guest"
+        args.password, "GENIMG_RMQ_PASSWORD", cfg, "password", "guest"
     )
-    args.vhost = resolve(args.vhost, "IMG_RMQ_VHOST", cfg, "vhost", "/")
+    args.vhost = resolve(args.vhost, "GENIMG_RMQ_VHOST", cfg, "vhost", "/")
     args.exchange = resolve(
-        args.exchange,
-        "IMG_RMQ_EXCHANGE",
-        cfg,
-        "exchange",
-        "predict-ai-gen-image",
+        args.exchange, "GENIMG_RMQ_EXCHANGE", cfg, "exchange", "predict-ai-gen-image"
     )
 
     queues_in = cfg.get("queues_in") or {}
     args.queues = {
-        tier: queues_in.get(
-            tier, f"gen-image-queue-in-{tier.replace('_', '-tier-')}"
-        )
+        tier: queues_in.get(tier, f"gen-image-queue-in-{tier.replace('_', '-tier-')}")
         for tier in TIERS
     }
     args.queue_out = cfg.get("queue_out", "gen-image-queue-out")
@@ -637,8 +591,8 @@ def finalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise SystemExit("--workers phải >= 1")
     if args.duration <= 0 and args.count <= 0:
         raise SystemExit(
-            "phải đặt --duration > 0 hoặc --count > 0, nếu không test không "
-            "bao giờ dừng"
+            "phải đặt --duration > 0 hoặc --count > 0, nếu không test không bao giờ "
+            "dừng"
         )
     if args.images and not 0.0 <= args.edit_ratio <= 1.0:
         raise SystemExit("--edit-ratio phải nằm trong [0, 1]")
@@ -670,48 +624,35 @@ def main(argv: list[str] | None = None) -> int:
     args = finalize_args(parse_args(argv))
     cycle = smooth_wrr(args.mix)
 
-    payload_label = (
-        f"image-edit {len(args.images)} ảnh"
-        if args.images
-        else "text-to-image"
-    )
     plan = (
-        f"broker   : "
-        f"amqp://{args.user}@{args.host}:{args.port}{'/' + args.vhost}\n"
-        f"exchange : {args.publish_exchange or '(default)'} → routing_key = "
-        f"tên queue\n"
-        "queues   : "
-        + ", ".join(f"{t}={q}" for t, q in args.queues.items())
-        + "\n"
+        f"broker   : amqp://{args.user}@{args.host}:{args.port}{'/' + args.vhost}\n"
+        f"exchange : {args.publish_exchange or '(default)'} → routing_key = tên queue\n"
+        "queues   : " + ", ".join(f"{t}={q}" for t, q in args.queues.items()) + "\n"
         "mix      : "
         + ":".join(str(args.mix[t]) for t in TIERS)
         + f"  (chu kỳ {len(cycle)}: {' '.join(cycle)})\n"
         f"tải      : rate={args.rate or 'max'} msg/s, workers={args.workers}, "
         f"duration={args.duration or '∞'}s, count={args.count or '∞'}, "
         f"confirm={'off' if args.no_confirm else 'on'}\n"
-        f"payload  : {payload_label}"
+        f"payload  : {_payload_label(args)}"
         f", seed={args.seed}, num_steps={args.num_steps or 'default'}"
     )
     print(plan)
     if args.dry_run:
         sample = build_payload(
-            f"lt-{args.run_id}-00000001",
-            args.images,
-            args.seed,
-            args.num_steps,
+            f"lt-{args.run_id}-00000001", args.images, args.seed, args.num_steps
         )
-        print(
-            "\npayload mẫu:\n"
-            + json.dumps(sample, ensure_ascii=False, indent=2)
-        )
+        print("\npayload mẫu:\n" + json.dumps(sample, ensure_ascii=False, indent=2))
         return 0
 
     stop = threading.Event()
+    drain_stop = threading.Event()
     stats = Stats()
 
     def on_signal(_sig, _frm):
         print("\n[main] nhận tín hiệu dừng, đang đóng connection...")
         stop.set()
+        drain_stop.set()
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
@@ -722,8 +663,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.declare:
             declare_topology(channel, args)
             print(
-                f"[declare] exchange={args.exchange} + {len(args.queues)} "
-                f"inbound + {args.queue_out}"
+                f"[declare] exchange={args.exchange} + {len(args.queues)} inbound + "
+                f"{args.queue_out}"
             )
         if args.purge:
             print("[purge] CẢNH BÁO: xoá message đang nằm trong queue")
@@ -732,21 +673,16 @@ def main(argv: list[str] | None = None) -> int:
 
     drain_thread = None
     if args.drain_out:
-        print(
-            f"[drain] consume {args.queue_out} — message sẽ KHÔNG còn cho BE "
-            f"đọc"
-        )
+        print(f"[drain] consume {args.queue_out} — message sẽ KHÔNG còn cho BE đọc")
         drain_thread = threading.Thread(
-            target=drain_worker, args=(args, stats, stop), daemon=True
+            target=drain_worker, args=(args, stats, drain_stop), daemon=True
         )
         drain_thread.start()
 
     budget = make_budget(args, stop)
     threads = [
         threading.Thread(
-            target=publish_worker,
-            args=(i, args, stats, stop, budget),
-            daemon=True,
+            target=publish_worker, args=(i, args, stats, stop, budget), daemon=True
         )
         for i in range(args.workers)
     ]
@@ -776,30 +712,44 @@ def main(argv: list[str] | None = None) -> int:
 
     for t in threads:
         t.join(timeout=10)
+    # Chốt mốc NGAY khi ngừng bắn: phần chờ drain bên dưới không phải thời
+    # gian publish, gộp vào sẽ ra rate publish thấp giả.
+    publish_elapsed = time.perf_counter() - started
 
     if drain_thread is not None:
         # Cho worker thật kịp trả nốt reply của những message cuối.
-        grace = min(args.drain_grace, 60.0)
+        # Cap rộng: burst vài chục message ở ~3s/ảnh cần hơn 60s mới rút hết
+        # backlog. Vòng chờ bên dưới thoát sớm ngay khi đủ reply nên cap lớn
+        # không làm test chạy lâu vô ích.
+        grace = min(args.drain_grace, 900.0)
         if grace > 0:
             print(f"[drain] chờ thêm {grace:.0f}s cho reply cuối...")
-            time.sleep(grace)
-        stop.set()
+            # Về sớm khi đã nhận đủ reply, khỏi ngồi hết grace.
+            waited = 0.0
+            while waited < grace:
+                with stats.lock:
+                    done = not stats.inflight
+                if done:
+                    print(f"[drain] đã nhận đủ reply sau {waited:.1f}s")
+                    break
+                time.sleep(0.5)
+                waited += 0.5
+        drain_stop.set()
         drain_thread.join(timeout=5)
 
     elapsed = time.perf_counter() - started
     total, per_tier, failed, replies = stats.snapshot()
     print("\n" + "─" * 72)
     print(
-        f"Tổng       : {total} message trong {elapsed:.1f}s → "
-        f"{total / max(elapsed, 1e-9):.1f} msg/s"
+        f"Tổng       : {total} message publish trong {publish_elapsed:.1f}s "
+        f"→ {total / max(publish_elapsed, 1e-9):.1f} msg/s (tổng run {elapsed:.1f}s)"
     )
     print(f"Thất bại   : {failed} (unroutable={stats.unroutable})")
     for tier in TIERS:
         share = per_tier[tier] / total * 100 if total else 0.0
         target = args.mix[tier] / sum(args.mix.values()) * 100
         print(
-            f"  {tier:<9}: {per_tier[tier]:>7}  {share:5.1f}%  (mix đặt "
-            f"{target:5.1f}%)"
+            f"  {tier:<9}: {per_tier[tier]:>7}  {share:5.1f}%  (mix đặt {target:5.1f}%)"
         )
     print(f"Publish    : {percentiles(stats.publish_latencies)}")
     if args.drain_out:
@@ -807,11 +757,16 @@ def main(argv: list[str] | None = None) -> int:
         if stats.reply_status:
             print(
                 "  status   : "
-                + ", ".join(
-                    f"{k}×{v}" for k, v in sorted(stats.reply_status.items())
-                )
+                + ", ".join(f"{k}×{v}" for k, v in sorted(stats.reply_status.items()))
             )
         print(f"  e2e      : {percentiles(stats.e2e_latencies)}")
+        if len(stats.reply_times) >= 2:
+            span = stats.reply_times[-1] - stats.reply_times[0]
+            n = len(stats.reply_times)
+            print(
+                f"  throughput: {(n - 1) / span:.3f} reply/s "
+                f"({span / (n - 1):.2f}s/ảnh) trên {n} reply, span {span:.1f}s"
+            )
         print(f"  chưa reply: {len(stats.inflight)}")
     print("─" * 72)
     return 1 if failed else 0

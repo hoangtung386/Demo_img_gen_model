@@ -1,0 +1,18 @@
+{
+  "_id": "req-000002",
+  "os": "ios",
+  "firebase_token": "abc123token",
+  "appid": "com.example.app",
+  "country": "VN",
+  "device_id": "device-xyz789",
+  "prompt": "turn this into a watercolor painting with soft pastel tones",
+  "negative_prompt": "",
+  "images": [
+    "https://storage.googleapis.com/<your-bucket>/images_test/304dcbb3-db8c-4440-9e84-1d245a77ce63-HiepNT.jpg"
+  ],
+  "seed": -1,
+  "num_steps": 0,
+  "aspect_ratio": 1.0,
+  "match_input_size": 0,
+  "storage_index": 0
+}

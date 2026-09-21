@@ -7,14 +7,13 @@ gửi request qua Gradio API chứ không tự nạp model:
     python scripts/warm_examples.py http://<demo-server-ip>:7860
 
 Chạy lại mỗi khi đổi danh sách trong ``ui/examples_spec.py``, đổi ảnh mẫu,
-hoặc sửa prompt — ảnh dựng sẵn cũ sẽ không còn khớp với những gì model sinh
-ra.
+hoặc sửa prompt — ảnh dựng sẵn cũ sẽ không còn khớp với những gì model sinh ra.
 
-CẢNH BÁO SAU KHI THAY LÕI SANG HiDream-O1: mỗi case giờ tốn hàng chục giây
-đến vài phút (50 bước, CFG bật, 2048²) thay vì ~8s của bản Lightning cũ.
-Chạy hết bộ ví dụ có thể mất 30+ phút. Và PHẢI chạy lại: ảnh trong
-``examples/outputs/`` hiện là của model cũ, để nguyên thì demo trưng ra kết
-quả không phải do model đang chạy sinh ra.
+⚠️ SAU KHI ĐỔI BACKEND sang FLUX.2-klein: mọi ảnh trong ``examples/outputs/``
+đều do backend Qwen cũ sinh ra, nên chúng KHÔNG còn đại diện cho model đang
+chạy. Phải chạy lại script này trên GPU thật trước khi tin vào khối ví dụ của
+UI. Repo không commit thư mục đó nên sau ``git clone`` nó vốn đã trống và UI
+tự bỏ qua case thiếu ảnh — demo vẫn chạy, chỉ là khối ví dụ trống.
 """
 
 from __future__ import annotations
@@ -28,8 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from gradio_client import Client, handle_file  # noqa: E402
 
-from imagegen.ui import examples_spec as spec  # noqa: E402
-from imagegen.ui import prompts  # noqa: E402
+from gen_image.ui import examples_spec as spec  # noqa: E402
+from gen_image.ui import prompts  # noqa: E402
 
 DEFAULT_URL = "http://localhost:7860/"
 

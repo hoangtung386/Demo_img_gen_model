@@ -1,0 +1,67 @@
+[
+  {
+    "_id": "req-batch-000001",
+    "os": "android",
+    "firebase_token": "abc123token",
+    "appid": "com.example.app",
+    "country": "VN",
+    "device_id": "device-001",
+    "prompt": "turn this into a watercolor painting with soft pastel tones",
+    "images": ["https://storage.googleapis.com/<your-bucket>/images_test/304dcbb3-db8c-4440-9e84-1d245a77ce63-HiepNT.jpg"],
+    "seed": -1,
+    "num_steps": 0,
+    "storage_index": 0
+  },
+  {
+    "_id": "req-batch-000002",
+    "os": "ios",
+    "firebase_token": "abc123token",
+    "appid": "com.example.app",
+    "country": "VN",
+    "device_id": "device-002",
+    "prompt": "make the sky look like a dramatic sunset with orange and purple clouds",
+    "images": ["https://storage.googleapis.com/<your-bucket>/images_test/5627059c-1693-4a91-b679-875597ae4b3e-image_post.jpeg"],
+    "seed": -1,
+    "num_steps": 0,
+    "storage_index": 0
+  },
+  {
+    "_id": "req-batch-000003",
+    "os": "android",
+    "firebase_token": "abc123token",
+    "appid": "com.example.app",
+    "country": "VN",
+    "device_id": "device-003",
+    "prompt": "convert to black and white film noir style with high contrast",
+    "images": ["https://storage.googleapis.com/<your-bucket>/images_test/574faf30-03f9-4350-bc29-77cef2ce18b0-HiepNT.jpg"],
+    "seed": -1,
+    "num_steps": 0,
+    "storage_index": 0
+  },
+  {
+    "_id": "req-batch-000004",
+    "os": "ios",
+    "firebase_token": "abc123token",
+    "appid": "com.example.app",
+    "country": "VN",
+    "device_id": "device-004",
+    "prompt": "add a cyberpunk neon glow effect with pink and cyan lighting",
+    "images": ["https://storage.googleapis.com/<your-bucket>/images_test/RON07289.jpg"],
+    "seed": -1,
+    "num_steps": 0,
+    "storage_index": 0
+  },
+  {
+    "_id": "req-batch-000005",
+    "os": "android",
+    "firebase_token": "abc123token",
+    "appid": "com.example.app",
+    "country": "VN",
+    "device_id": "device-005",
+    "prompt": "transform into a minimalist line art sketch on white background",
+    "images": ["https://storage.googleapis.com/<your-bucket>/images_test/RON07841.jpg"],
+    "seed": -1,
+    "num_steps": 0,
+    "storage_index": 0
+  }
+]

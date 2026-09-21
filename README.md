@@ -1,53 +1,35 @@
-# HiDream-O1-Image (SDNQ 4-bit) — Gradio Demo + Queue Worker
+# FLUX.2-klein-4B — Service sinh ảnh
 
-Service sinh và chỉnh sửa ảnh chạy
-[**HiDream-O1-Image**](https://huggingface.co/HiDream-ai/HiDream-O1-Image) bản
-đã lượng tử hoá 4-bit bằng
-[SDNQ](https://github.com/Disty0/sdnq):
-[`WaveCut/HiDream-O1-Image-SDNQ-4bit-dynamic-uint4-th1e-2`](https://huggingface.co/WaveCut/HiDream-O1-Image-SDNQ-4bit-dynamic-uint4-th1e-2).
+Sinh ảnh từ chữ và sửa ảnh theo tham chiếu bằng
+[**FLUX.2-klein-4B**](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
+(bản step-distilled, 4 bước) qua `diffusers`. Ship hai entrypoint dùng chung
+một tầng model:
 
-HiDream-O1 là một **Pixel-level Unified Transformer**: một model duy nhất, không
-VAE, không text encoder rời — text-to-image và chỉnh sửa ảnh đi qua cùng một
-lời gọi.
+- **RabbitMQ consumer** (`main_queue.py`) — đường production.
+- **Gradio demo 7 tab** (`scripts/serve.py`) — để thử và trình diễn.
 
-> **Đã thay lõi.** Dự án trước đây chạy `Qwen-Image-Edit-2509 Lightning` qua
-> Nunchaku + diffusers. Xem
-> [docs/MODEL_HIDREAM_O1.md](docs/MODEL_HIDREAM_O1.md) để biết cái gì
-> đổi, vì sao, và những gì còn phải kiểm chứng trên GPU thật.
-
-## Bắt đầu từ đâu
-
-README này dài — dưới đây là đường ngắn nhất cho từng vai trò.
-
-| Bạn muốn | Đọc |
-| :-- | :-- |
-| Chạy thử demo trên máy có GPU | [Cài đặt](#cài-đặt) → [Tải trọng số](#tải-trọng-số) → [Chạy trực tiếp](#chạy-trực-tiếp-không-docker) |
-| Deploy lên server | [Triển khai trên Google Cloud](#triển-khai-trên-google-cloud-trọng-số-từ-gcs) → [Chạy bằng Docker](#chạy-bằng-docker) |
-| Nối queue với backend | [docs/QUEUE_SERVICE.md](docs/QUEUE_SERVICE.md) |
-| Hiểu code để sửa | [docs/architecture.md](docs/architecture.md) |
-| Ảnh sinh quá chậm | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
-| Hiểu model & những gì chưa kiểm chứng | [docs/MODEL_HIDREAM_O1.md](docs/MODEL_HIDREAM_O1.md) |
-
-> **Nếu bạn vừa nhận bàn giao repo này:** đọc
-> [docs/MODEL_HIDREAM_O1.md §5 — Việc CÒN LẠI](docs/MODEL_HIDREAM_O1.md) trước
-> tiên. Model lõi vừa được thay và **chưa có gì chạy qua một forward pass
-> thật**; có 7 việc cần GPU để đóng lại.
+> Backend trước đây là Qwen-Image-Edit-2509 Lightning (INT4 / Nunchaku). Lý
+> do đổi, số liệu VRAM và những gì mất đi: xem
+> [docs/adr/0001-flux2-klein-backend.md](docs/adr/0001-flux2-klein-backend.md).
+>
+> 🚀 **Trước khi áp dụng bất kỳ hướng dẫn "tối ưu image gen" nào**, đọc
+> [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Phần lớn lời khuyên trên mạng
+> viết cho SDXL 30 bước; ở đây có cái đã có sẵn, và có cái **làm hỏng ảnh**
+> (đổi sampler trên model đã chưng cất).
 
 ## Yêu cầu
 
-- Python >= 3.10, < 3.14 (khuyên dùng `uv`)
-- GPU NVIDIA có bf16 (Ampere trở lên: A100, RTX 30/40/50-series).
-  SDNQ thuần PyTorch nên **không phải chọn int4/fp4 theo đời card** như
-  Nunchaku trước đây.
-- **~9.9 GB đĩa** cho trọng số, **~11 GiB VRAM** lúc chạy. Card 24GB (RTX 4090,
-  A10G) giờ đủ — bản Qwen cũ cần 26.4 GiB.
-- **Không cần HuggingFace token.** Cả model gốc lẫn bản lượng tử hoá đều là MIT
-  và không gated.
+- Python >= 3.10 (khuyên dùng môi trường ảo `uv`)
+- GPU NVIDIA >= 20GB VRAM. Mục tiêu tối ưu là **L4 24GB**: toàn bộ pipeline
+  bf16 chiếm ~16 GiB nên thường trú được, không cần offload.
+- ~17GB đĩa cho trọng số
+- Đã accept license của
+  [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
+  trên Hugging Face (model Apache 2.0, nhưng repo có thể vẫn yêu cầu đồng ý)
 
-⚠️ **Đọc mục [Tốc độ](#tốc-độ) trước khi lên kế hoạch tải.** Model này chạy 50
-bước có CFG ở 2048×2048 — chậm hơn bản Lightning 4-bước một bậc độ lớn.
-
-Thuê A100 trên Google Cloud: xem [mục riêng bên dưới](#thuê-a100-trên-google-cloud).
+> ⚠️ **Phase 0 chưa nghiệm thu.** Mọi số VRAM/latency trong README này là
+> tính toán hoặc suy luận từ mã nguồn diffusers, **chưa đo trên L4 thật**.
+> Chạy `python scripts/spike_flux2.py` rồi điền vào ADR trước khi deploy.
 
 ## Cài đặt
 
@@ -64,7 +46,7 @@ uv sync --extra dev
 Sau đó chạy thông qua `uv run` (không cần kích hoạt venv thủ công):
 
 ```bash
-uv run download-model     # tải trọng số (~9.9GB)
+uv run download-model     # tải trọng số
 uv run run-app            # chạy demo
 ```
 
@@ -76,87 +58,123 @@ uv pip install -e .
 # uv pip install -e ".[dev]"   # kèm dev tools
 ```
 
-### Về ghim phiên bản
-
-Ba ghim trong `pyproject.toml` **không phải tuỳ tiện** — đổi một cái là phải
-kiểm tra cả ba:
-
-| Package | Ghim | Vì sao |
-| :-- | :-- | :-- |
-| `transformers` | `==4.57.1` | Bản HiDream ghim. `hidream/vendor/qwen3_vl_transformers.py` bám vào internals 4.57 (`masking_utils`, `modeling_layers`, `models.qwen3_vl.*`). |
-| `torch` | `>=2.10` | README của HiDream nói rõ **không** dùng 2.9.x — [Qwen3-VL#1811](https://github.com/QwenLM/Qwen3-VL/issues/1811). |
-| `gradio` | `==6.17.3` | Bản mới nhất còn cho phép `huggingface-hub < 1.0`. Từ 6.18 gradio đòi hub >= 1.2, xung đột cứng với transformers 4.57.1. |
-
 ## Cấu hình (config_setup/base.yaml)
 
-Toàn bộ config nằm trong **một file** `config_setup/base.yaml`. `download`,
-`serve`, `main_queue` và các script model đều đọc từ đây. Sao chép template rồi
-điền giá trị:
+Toàn bộ config nằm trong **một file** `config_setup/base.yaml` (khối `app:`) —
+gộp từ `config/example.env` cũ. `download`, `serve` và các script model đều đọc
+từ đây. Sao chép template rồi điền giá trị:
 
 ```bash
 cp config_setup/base.example.yaml config_setup/base.yaml
+# mở config_setup/base.yaml, sửa khối app: (đặt hf_token nếu tải model gated,
+# hoặc để trống rồi export HF_TOKEN qua môi trường cho an toàn)
 ```
 
-> Mọi key override được bằng biến môi trường `IMG_* / HF_TOKEN / MODEL_ROOT`
-> (env THẮNG YAML). `.env` cũ vẫn được nạp nếu tồn tại (backward-compat).
-
-> ⚠️ **Tiền tố biến môi trường đã đổi `QIE_*` → `IMG_*`.** `QIE` viết tắt của
-> "Qwen Image Edit" nên mất nghĩa. Biến `QIE_*` cũ **không còn được đọc** — có
-> một test (`test_no_qie_prefix_left_in_source`) canh cho nó không quay lại.
-> Bảng chuyển đổi ở [mục dưới](#bảng-chuyển-đổi-biến-môi-trường).
+> Mọi key vẫn override được bằng biến môi trường `GENIMG_* / HF_TOKEN / MODEL_ROOT`
+> (env THẮNG YAML) — docker-compose set env nên không phá deploy hiện tại.
+> `.env` cũ vẫn được nạp nếu tồn tại (backward-compat).
 
 Các key quan trọng trong `app:` (đọc bởi cả `download` và `serve`):
 
 | Biến | Mặc định | Ý nghĩa |
 | :--- | :--- | :--- |
-| `IMG_MODEL_TYPE` | `full` | `full` (50 bước) hoặc `dev` (28 bước, nhanh ~3.5×) |
-| `IMG_NUM_STEPS` | `50` | Số bước. Bỏ trống thì tự theo `model_type`. |
-| `IMG_GUIDANCE_SCALE` | `5.0` | CFG. **> 1.0 nhân đôi số forward pass.** Đặt `0.0` cho bản dev. |
-| `IMG_SHIFT` | `3.0` | Độ lệch lịch nhiễu. `1.0` cho bản dev. |
-| `IMG_SCHEDULER` | `default` | `default` / `flow_match` / `flash` |
-| `IMG_WIDTH` / `IMG_HEIGHT` | `2048` | Chỉ chọn **tỉ lệ** — xem cảnh báo dưới |
-| `IMG_DEVICE` | (auto) | `cuda:1` nếu ≥2 GPU, ngược lại `cuda:0` |
-| `IMG_WARMUP` | `true` | Sinh một ảnh thật lúc khởi động để người dùng đầu tiên không phải chờ |
-| `IMG_PORT` | `7860` | Cổng Gradio |
-| `IMG_SERVER_NAME` | `0.0.0.0` | Bind address |
-| `IMG_DEMO_CACHE` | `true` | Ví dụ mẫu trả ảnh dựng sẵn thay vì chạy model |
-| `IMG_MODEL_PATH` | (từ `.model_paths.env`) | Thư mục model local |
-| `IMG_USE_FLASH_ATTN` | `false` | Bật nếu image có `flash-attn` khớp torch+CUDA |
+| `GENIMG_NUM_STEPS` | `4` | Bản distilled được chưng cất về đúng 4 bước |
+| `GENIMG_GUIDANCE_SCALE` | `1.0` | Giá trị model card. Bản distilled KHÔNG chạy CFG |
+| `GENIMG_QUANTIZATION` | `bf16` | `bf16` / `gguf` — xem "bf16 hay GGUF?" bên dưới |
+| `GENIMG_COMPILE` | `false` | `torch.compile` transformer; chỉ có tác dụng ở nhánh bf16 |
+| `GENIMG_OFFLOAD` | `resident` | `resident` / `model_offload` |
+| `GENIMG_BASE_MODEL` | `black-forest-labs/FLUX.2-klein-4B` | PHẢI là bản distilled |
+| `GENIMG_BASE_MODEL_LOCAL` | (rỗng) | Path weight đã có trên đĩa; rỗng → tải từ Hub |
+| `GENIMG_TRANSFORMER_GGUF` | (rỗng) | Path file `.gguf`; chỉ đọc khi `quantization: gguf` |
+| `GENIMG_WARMUP` | `true` | Chạy lượt sinh ảnh giả lúc khởi động để người dùng đầu tiên không phải chờ |
+| `GENIMG_PORT` | `7860` | Cổng Gradio |
+| `GENIMG_SERVER_NAME` | `0.0.0.0` | Bind address (để chạy trên server) |
+| `GENIMG_DEMO_CACHE` | `true` | Ví dụ mẫu trả ảnh dựng sẵn thay vì chạy model (xem bên dưới) |
 
-### ⚠️ Không chọn được kích thước ảnh ra
+Chỉ còn hai chiến lược đặt model, không còn `auto` tự dò phần cứng:
 
-`IMG_WIDTH`/`IMG_HEIGHT` chỉ chọn **tỉ lệ khung**. Model snap mọi yêu cầu về
-một trong **11 độ phân giải cố định**:
+| Giá trị | Khi nào | Ghi chú |
+| :--- | :--- | :--- |
+| `resident` | GPU >= 20 GiB (L4, A100, H100…) | Mọi component ở lại GPU. **Mặc định.** |
+| `model_offload` | Card nhỏ hơn, hoặc nhiều process/GPU | Weight ở CPU, kéo lên theo module. Chậm hơn đáng kể. |
 
+> `auto` đã bị bỏ có chủ đích: tự dò nghe tiện nhưng nó biến một lỗi cấu hình
+> thành một quyết định âm thầm — service vẫn khởi động, chỉ là chậm gấp đôi
+> vì đã lặng lẽ rơi về offload. Giá trị sai giờ là lỗi dừng hẳn.
+
+> ⚠️ Tiền tố cũ `QIE_*` **không còn tác dụng**. Đây là cú cắt sạch có chủ
+> đích: vì env thắng YAML, một `QIE_TRANSFORMER_PATH` còn sót trong môi
+> trường deploy sẽ âm thầm ghi đè cấu hình đúng và trỏ pipeline về trọng số
+> Qwen không còn tồn tại. Quét sạch môi trường trước khi deploy.
+
+### Deploy trên L4 24GB
+
+Cấu hình đọc từ `config_setup/base.yaml`, mount read-only qua
+`- ./config_setup:/app/config_setup:ro` — **cùng file** cho cả hai service,
+chỉ khác khối được đọc: `gen-image` (Gradio) đọc khối `app:`,
+`gen-image-queue` đọc khối `processor:`.
+
+```bash
+cp config_setup/base.example.yaml config_setup/base.yaml
+# base.example.yaml đã điền sẵn giá trị khuyến nghị cho L4:
+#   quantization: "bf16"   offload: "resident"   num_steps: 4
+docker compose up -d --build
 ```
-2048×2048  2304×1728  1728×2304  2560×1440  1440×2560  2496×1664
-1664×2496  3104×1312  1312×3104  2304×1792  1792×2304
+
+#### Vì sao không cần offload nữa
+
+| | Backend cũ (Qwen) | FLUX.2-klein-4B |
+| :--- | ---: | ---: |
+| `text_encoder` | Qwen2.5-VL **15.4 GB** | Qwen3-4B (text-only) **~8 GB** |
+| `transformer` | INT4 10.7 GB | bf16 7.75 GB |
+| `vae` | 0.24 GB | ~0.3 GB |
+| **Tổng thường trú** | **26.4 GB — không vừa L4** | **~16 GB — vừa** |
+
+Backend cũ phải đẩy text encoder ra CPU và chuyển qua lại PCIe mỗi request.
+FLUX.2-klein vừa GPU, nên `offload: "resident"` giữ mọi component tại chỗ và
+**không có lần chuyển CPU↔GPU nào lúc suy luận**. Cả tầng `models/offload.py`
+(4 chiến lược, ~200 dòng) đã bị xoá.
+
+Còn đúng một đường lùi, `offload: "model_offload"`, cho card nhỏ hơn L4 —
+chậm hơn đáng kể, đừng dùng nếu không bắt buộc.
+
+#### Bắt buộc kiểm tra sau khi đổi máy/VM mới
+
+`base.yaml` bị `.gitignore` chặn (chứa secret) nên không tự có sau
+`git clone`. Nếu thiếu file hoặc mount sai đường dẫn, `gen_image.config`
+**không dừng hẳn** — nó chỉ in WARNING rồi rơi về default hard-code. Luôn
+xác nhận trước khi tin tưởng:
+
+```bash
+python scripts/preflight.py                      # KHÔNG cần GPU, chạy vài giây
+docker compose exec gen-image-queue cat /app/config_setup/base.yaml | grep -E "quantization|offload"
+docker compose logs gen-image-queue | grep -iE "CẢNH BÁO|Đặt model|Quantization"
 ```
 
-Đặt `1024×1024` **không** cho ảnh 1024 — nó vẫn ra 2048×2048. Không có đòn bẩy
-nào để sinh ảnh nhỏ hơn cho nhanh, khác hẳn `output_area` của bản Qwen cũ (đã
-bị bỏ khỏi config).
+`scripts/preflight.py` cũng cảnh báo nếu `model_index.json` thiếu
+`is_distilled` — dấu hiệu đã tải nhầm `FLUX.2-klein-base-4B` (không
+distilled, chậm hơn ~4 lần ở cùng cấu hình).
 
-### Không còn chiến lược offload
+#### bf16 hay GGUF?
 
-Bản Qwen cũ có `QIE_OFFLOAD` với 5 chế độ vì phải xếp text_encoder (15.4 GiB) +
-transformer (10.7 GiB) + vae qua một hay nhiều card. Model mới là **một khối
-~11 GiB** — `accelerate device_map` đặt trọn lên card đã chọn, không còn gì để
-chia. Biến đó đã bị bỏ.
+Mặc định là **bf16**, dù người đặt hàng chỉ đích danh repo GGUF. Lý do: GGUF
+trong diffusers giải nén về `compute_dtype` **ngay trong forward** — đổi dung
+lượng lấy băng thông, mà băng thông (300 GB/s trên L4) mới là nút cổ chai.
+Vì bf16 *đã vừa* 24 GB, đổi lấy dung lượng là đổi lấy thứ ta không thiếu.
+GGUF cũng không `torch.compile` được
+([diffusers#10795](https://github.com/huggingface/diffusers/issues/10795)).
 
-### Bảng chuyển đổi biến môi trường
+Chọn `quantization: "gguf"` khi — và chỉ khi — cần nhồi **2 worker process
+lên cùng một L4**; xem [docs/MULTI_PROCESS_WORKERS.md](docs/MULTI_PROCESS_WORKERS.md).
 
-| Cũ (`QIE_*`) | Mới | Ghi chú |
-| :-- | :-- | :-- |
-| `QIE_BASE_MODEL_LOCAL` + `QIE_TRANSFORMER_PATH` | `IMG_MODEL_PATH` | Gộp thành một thư mục |
-| `QIE_OFFLOAD` | — | Bỏ hẳn |
-| `QIE_PRECISION`, `QIE_RANK` | — | Bỏ hẳn (đặc thù Nunchaku) |
-| `QIE_TRANSFORMER_REPO`, `QIE_TRANSFORMER_SUBDIR` | — | Bỏ hẳn |
-| `QIE_DOWNLOAD_BASE_TRANSFORMER` | — | Bỏ hẳn (không còn shard thừa) |
-| `QIE_TEXT_ENCODER_DEVICE` | — | Bỏ hẳn (không có text encoder rời) |
-| `QIE_NUM_STEPS`, `QIE_DEVICE`, `QIE_WARMUP`, `QIE_PORT`, `QIE_SERVER_NAME`, `QIE_DEMO_CACHE` | đổi tiền tố thành `IMG_` | Ngữ nghĩa giữ nguyên |
-| `QIE_RMQ_*`, `QIE_QUEUE_CONFIG`, `QIE_MODELS_*`, `QIE_GCS_KEY_FILE` | đổi tiền tố thành `IMG_` | Ngữ nghĩa giữ nguyên |
-| — | `IMG_MODEL_TYPE`, `IMG_GUIDANCE_SCALE`, `IMG_SHIFT`, `IMG_SCHEDULER`, `IMG_WIDTH`, `IMG_HEIGHT`, `IMG_USE_FLASH_ATTN` | Mới |
+#### Đo lại trên phần cứng của bạn
+
+Đừng tin bảng nào trong README này: chúng là tính toán, chưa phải số đo.
+
+```bash
+python scripts/spike_flux2.py       # cổng chặn Phase 0 (xem ADR 0001)
+make benchmark                      # ma trận t2i / edit / edit2
+```
 
 ## Tải trọng số
 
@@ -165,27 +183,31 @@ python scripts/download_model.py
 # hoặc: uv run download-model
 ```
 
-Script tải **một** snapshot (~9.9 GB) về `models/HiDream-O1-Image-SDNQ-uint4/`,
-rồi ghi đường dẫn vào `.model_paths.env` để `serve` dùng trực tiếp.
+Script tải:
+1. Pipeline đầy đủ (`black-forest-labs/FLUX.2-klein-4B`, ~16GB) →
+   `models/FLUX.2-klein-4B` — gồm transformer bf16, text_encoder Qwen3-4B,
+   vae, scheduler, tokenizer.
+2. *(chỉ khi `quantization: "gguf"`)* đúng **một** file `.gguf` →
+   `models/gguf/`. Repo GGUF có ~15 bản lượng tử hoá; script cố tình không
+   `snapshot_download` cả repo.
 
-Khác bản Qwen cũ: model mới là một repo `transformers` **phẳng** (config + 3
-shard + tokenizer ở cấp gốc), không còn `model_index.json` và các thư mục con
-`vae/`, `text_encoder/`, `transformer/`. Vì thế cũng chỉ còn một lời gọi tải,
-không còn bước bỏ qua 39GB shard BF16 thừa.
+Sau đó ghi đường dẫn local vào `.model_paths.env` để `serve` dùng trực tiếp
+(không tải lại lúc chạy).
 
-**Không có gì rơi vào `~/.cache/huggingface`.** Cache của HuggingFace đã được
-ghim vào `models/.hf` ngay trong `imagegen/__init__.py`, nên toàn bộ dữ liệu
-tải về nằm trong project. Đặt `HF_HOME` tường minh nếu muốn chỗ khác.
+Hai điều đáng biết:
 
-Kiểm tra cây model bất cứ lúc nào (vài giây, không cần GPU, không cần torch):
+- **Không có gì rơi vào `~/.cache/huggingface`.** Cache của HuggingFace đã được
+  ghim vào `models/.hf` ngay trong `gen_image/__init__.py`, nên toàn bộ dữ
+  liệu tải về nằm trong project. Đặt `HF_HOME` tường minh nếu muốn chỗ khác.
+- **Tải đúng bản distilled.** `FLUX.2-klein-base-4B` là repo KHÁC: không
+  distilled, cần vài chục bước và guidance thật — chậm hơn ~4 lần ở cùng
+  cấu hình. `make preflight` cảnh báo nếu tải nhầm.
+
+Kiểm tra cây model bất cứ lúc nào (không cần GPU):
 
 ```bash
 make preflight
 ```
-
-Nó kiểm tra đủ file, đủ shard, đúng `quant_method: sdnq` và đúng kiến trúc —
-bắt được cả trường hợp tải nhầm bản BF16 chưa lượng tử hoá (chạy được nhưng
-tốn 17 GiB VRAM thay vì 11).
 
 ## Triển khai trên Google Cloud (trọng số từ GCS)
 
@@ -193,22 +215,24 @@ tốn 17 GiB VRAM thay vì 11).
 cần `.env`, không cần `HF_TOKEN`, không chạm tới HuggingFace.**
 
 ```bash
-git clone -b develop https://github.com/hoangtung386/Demo_img_gen_model.git
+git clone -b demo/FLUX_2_klein_4B https://github.com/hoangtung386/Demo_img_gen_model.git
 cd Demo_img_gen_model
-cp /duong/dan/toi/<key-file>.json .      # key service account GCS
+cp /directory-path/ai-service-account.json .      # key service account GCS
 docker compose up -d --build
 ```
 
 Thế thôi. `docker compose up` chạy hai service theo thứ tự:
 
-1. **`model-fetcher`** — xác thực bằng `<key-file>.json`, tải
-   `...zip` (21.5 GB) về rồi giải nén vào
-   `./models/`, tự kiểm tra cây thư mục, xong thì thoát.
-2. **`qwen-lightning`** — chỉ khởi động khi bước trên trả về 0
+1. **`model-fetcher`** — xác thực bằng `ai-service-account.json`, tải
+   `gs://ai-service-account/models.tar.zst` về rồi giải nén vào
+   `./models/`, tự kiểm tra cây thư mục, xong thì thoát. Stream thẳng qua
+   `gcloud storage cat | zstd -d | tar -x` — không có archive trung gian
+   chạm đĩa, chỉ cần ~27 GB đĩa trống (xem mục "Đổi archive" bên dưới).
+2. **`gen-image`** — chỉ khởi động khi bước trên trả về 0
    (`depends_on: service_completed_successfully`).
 
 Lần chạy sau, fetcher thấy `models/.fetched-from` khớp URI và còn đủ file thì
-bỏ qua, không tải lại. Ép tải lại: `IMG_MODELS_FORCE=true docker compose up`.
+bỏ qua, không tải lại. Ép tải lại: `GENIMG_MODELS_FORCE=true docker compose up`.
 
 > **Đến đây là xong — không phải chạy thêm lệnh nào.** `CMD` của image chính
 > là `python scripts/serve.py`, và compose không ghi đè nó. Mục
@@ -221,7 +245,7 @@ bỏ qua, không tải lại. Ép tải lại: `IMG_MODELS_FORCE=true docker com
 ```bash
 docker compose logs -f              # theo dõi tải model + warm-up (~2-3 phút)
 docker compose ps                   # xem trạng thái
-docker compose restart qwen-lightning   # khởi động lại app, không tải lại model
+docker compose restart gen-image   # khởi động lại app, không tải lại model
 docker compose down                 # dừng và xoá container
 ```
 
@@ -230,7 +254,7 @@ dừng container app và để nó nằm lại ở trạng thái exited, lần s
 xung đột tên. `down` dọn cả app lẫn container fetcher đã thoát.
 
 Thư mục `./models` **không** bị `down` đụng tới — nó là bind mount trên host,
-nên lần `up` sau không phải tải lại 21.5 GB.
+nên lần `up` sau không phải tải lại.
 
 Không có `docker run` một dòng cho service này, vì nó là **hai** container
 chạy có thứ tự: fetcher phải xong trước, app mới được khởi động
@@ -242,28 +266,27 @@ run` thì phải tự chạy hai lệnh đúng thứ tự và tự truyền lạ
 
 ### Build cài những gì
 
-`Dockerfile` dùng **Python 3.13 + uv**, tương đương một lệnh:
+`Dockerfile` dùng **Python 3.13 + uv**, tương đương hai lệnh chạy tay:
 
 ```bash
-uv sync --frozen --no-dev
+uv sync --frozen --no-dev --no-install-project
 ```
 
-Không còn bước cài wheel riêng như thời Nunchaku — mọi dependency đều đến từ
-PyPI qua `uv.lock`, kể cả `sdnq`. Cũng không còn `[tool.uv.sources]`.
+Một lệnh là đủ — không còn wheel ngoài PyPI nào phải cài tay. Trước đây
+`nunchaku` chỉ phát hành wheel trên GitHub releases, dựng riêng cho từng tổ
+hợp `python × torch × CUDA`, nên `pyproject.toml` phải ghim 4 URL trong
+`[tool.uv.sources]` và Dockerfile phải cài lại tường minh **sau** `uv sync`
+để diffusers không bị kéo ngược phiên bản. Cả khối đó đã biến mất.
 
-Build vẫn có bước chốt phiên bản đọc metadata (không `import`, vì builder
-không có GPU), nên ghim lệch là fail ngay lúc build chứ không phải sau vài
-chục giây nạp model:
+Build có bước chốt phiên bản (`scripts/verify_build.py`) đọc metadata —
+không import torch/diffusers, vì builder không có GPU. Nó cũng khẳng định
+`nunchaku` **vắng mặt**: package đó ghim `diffusers==0.36` và sẽ kéo tụt
+phiên bản xuống dưới ngưỡng `Flux2KleinPipeline` cần nếu lỡ quay lại qua một
+dependency bắc cầu.
 
 ```
-OK — torch 2.14.0 | transformers 4.57.1 | sdnq 0.2.6 | diffusers 0.36.0
+✅ OK — diffusers 0.40.0, torch 2.9.0, transformers 5.15.0
 ```
-
-**`flash-attn` KHÔNG có trong image.** Build nó mất khoảng một giờ và phải
-khớp cả torch lẫn CUDA. Code vendor của HiDream hard-code `use_flash_attn=True`
-— dự án đã patch thành cờ `IMG_USE_FLASH_ATTN` (mặc định `false`, xem
-`src/imagegen/hidream/vendor/VENDOR.md`). Không có patch này thì inference nổ
-ngay forward đầu tiên, sau khi đã nạp xong 10GB weight.
 
 ### Xác thực GCS
 
@@ -272,12 +295,12 @@ Hai key nằm chung trong `config_setup/credentials/` (mỗi key một vai trò)
 - `model-download-key.json` — tải trọng số model nội bộ (`fetch_models.sh`).
 - `user-upload-key.json` — upload ảnh kết quả lên bucket cho user (queue service).
 
-`scripts/fetch_models.sh` dò key download theo thứ tự: `$IMG_GCS_KEY_FILE` →
+`scripts/fetch_models.sh` dò key download theo thứ tự: `$GENIMG_GCS_KEY_FILE` →
 `/credentials/model-download-key.json` → `/project/config_setup/credentials/
-model-download-key.json` → **`<key-file>.json` ở gốc repo** → bất kỳ
-`<key-file>*.json` nào. `config_setup/credentials` được mount `:ro` vào
+model-download-key.json` → **`ai-asset-amb.json` ở gốc repo** → bất kỳ
+`ai-asset*.json` nào. `config_setup/credentials` được mount `:ro` vào
 `/credentials` trong container fetcher; key **không** đi vào image và không nằm
-trong build context (`.dockerignore` chặn `*-key.json`, `<key-file>*.json`).
+trong build context (`.dockerignore` chặn `*-key.json`, `ai-asset*.json`).
 
 Không có file key nào thì script rơi về ADC — **cách nên dùng trên GCE**: gắn
 service account vào VM, không có file key nào để rò rỉ, thu hồi bằng một lệnh
@@ -285,33 +308,35 @@ IAM. Quyền tối thiểu: `roles/storage.objectViewer` trên bucket.
 
 ### Đổi archive
 
-```yaml
-IMG_MODELS_URI: "${IMG_MODELS_URI:-gs://<your-bucket>/hidream-o1-sdnq-uint4.zip}"
-```
+Mặc định đã ghim trong `docker-compose.yml`, không cần đặt biến nào:
 
-> ⚠️ **Archive cũ không dùng lại được.** Nó chứa trọng số Qwen; fetcher sẽ
-> chạy thành công rồi app báo thiếu file. Phải đóng gói lại:
-> `make download && make pack DEST=gs://<bucket>/`, rồi cập nhật
-> `IMG_MODELS_URI` trong `docker-compose.yml`.
+```yaml
+GENIMG_MODELS_URI: "${GENIMG_MODELS_URI:-gs://<your-bucket>/models.tar.zst}"
+```
 
 `fetch_models.sh` nhận `.zip`, `.tar.zst`, `.tar.gz`, `.tar`, hoặc một prefix
 thư mục. Archive bọc trong một cấp `models/` — như `zip -r models.zip models/`
 tạo ra — được nhận diện và bỏ cấp đó tự động, nên không ra `models/models/...`.
 
-Nó cũng kiểm tra `IMG_MODELS_REQUIRE` sau khi giải nén; mặc định là
-`HiDream-O1-Image-SDNQ-uint4/config.json` +
-`HiDream-O1-Image-SDNQ-uint4/model.safetensors.index.json`. Giải nén ra sai
-cấu trúc thì fetcher fail ở đó chứ không để app phát hiện sau.
+**Dùng `.tar.zst` chứ không phải `.zip`** — từng dùng `.zip` và đã hết đĩa
+thật giữa production. Số đo trên chính trọng số của repo này, mẫu 500MB lấy
+từ giữa file transformer INT4:
 
-**Nên dùng `.tar.zst` thay vì `.zip`** — không phải vì tỉ lệ nén (chênh ~2%)
-mà vì **tar stream được, zip thì không**: central directory của zip nằm ở cuối
-file nên VM buộc phải tải trọn archive xuống đĩa rồi mới giải nén, tức cần gấp
-đôi dung lượng. Với `.tar.zst`, `gcloud storage cat | zstd -d | tar -x` chỉ
-cần đủ chỗ cho bản giải nén, và một lần tải dở dang cũng không để lại archive
-cụt. zstd còn nhanh hơn gzip hàng chục lần.
+| | Thời gian | Tiết kiệm |
+| :--- | ---: | ---: |
+| `gzip -6` (tức `zip`) | 42.9s | 32.8% |
+| `zstd -3 -T0` | **0.7s** | **34.9%** |
+| `zstd -10 -T0` | 7.0s | 35.9% |
 
-Ở quy mô ~9.9 GB của model này thì khoản chênh đó nhỏ hơn nhiều so với thời
-Qwen (21.5 GB archive + 26.4 GB giải nén), nhưng lý do kỹ thuật thì không đổi.
+zstd nhanh hơn 60 lần **và** nén tốt hơn. Nhưng lý do quan trọng hơn là
+**tar stream được, zip thì không**: central directory của zip nằm ở cuối
+file, nên VM buộc phải tải trọn 21.5 GB xuống đĩa rồi mới giải nén thêm
+26.4 GB nữa — tức **~48 GB đĩa trống** phải có. Với `.tar.zst`,
+`gcloud storage cat | zstd -d | tar -x` chỉ cần 27 GB, và một lần tải dở dang
+cũng không để lại archive cụt.
+
+Đóng gói lại khi đổi trọng số (rank/steps/precision khác, hoặc cập nhật
+model):
 
 ```bash
 make pack DEST=gs://<your-bucket>/      # -> models.tar.zst rồi upload
@@ -340,7 +365,7 @@ Cần `uv sync` và trọng số nằm sẵn trong `./models` trước (xem
 ## Giao diện (7 tab)
 
 Mở trình duyệt tại `http://<server-ip>:7860`. Năm tab đầu đã
-có prompt chuyên biệt viết sẵn (xem `src/imagegen/ui/prompts.py`):
+có prompt chuyên biệt viết sẵn (xem `src/gen_image/ui/prompts.py`):
 
 | Tab | Đầu vào | Kết quả |
 | :--- | :--- | :--- |
@@ -349,30 +374,34 @@ có prompt chuyên biệt viết sẵn (xem `src/imagegen/ui/prompts.py`):
 | **3. Image to Cartoon** | 1 ảnh chụp có người và phong cảnh | Toàn bộ người trong ảnh thành nhân vật hoạt hình giữ tối đa nét mặt, kiểu tóc, vóc dáng, trang phục; phong cảnh vẽ lại cùng phong cách |
 | **4. Ghép 2 người ôm nhau** | Ảnh 1: người thứ nhất — Ảnh 2: người thứ hai *(ảnh nền)* | Một ảnh duy nhất hai người đang ôm nhau, giữ khuôn mặt, kiểu tóc, vóc dáng và trang phục của từng người |
 | **5. Face Swap** | Ảnh 1: mặt đã crop — Ảnh 2: ảnh đầy đủ có người và phong cảnh *(ảnh nền)* | Chính ảnh 2 nhưng khuôn mặt đã đổi sang người ở ảnh 1, giữ nguyên phong cảnh, quần áo, dáng người, khung hình — và trả về **đúng kích thước pixel của ảnh 2** |
-| **6. Prompt to Image** | Chỉ prompt, **không cần ảnh** | Ảnh mới sinh hoàn toàn từ mô tả — đây là tác vụ HiDream-O1 mạnh nhất |
-| **7. Image + Prompt** | 1 ảnh + yêu cầu sửa tự viết | Ảnh đã sửa theo yêu cầu — tab tổng quát, sáu tab trên chỉ là prompt chuyên biệt viết sẵn cho cùng model này |
+| **6. Prompt to Image** | Chỉ prompt + tỉ lệ khung, **không cần ảnh** | Ảnh mới sinh hoàn toàn từ mô tả |
+| **7. Image + Prompt** | 1 ảnh + yêu cầu sửa tự viết | Ảnh đã sửa theo yêu cầu — tab tổng quát, sáu tab trên chỉ là prompt chuyên biệt viết sẵn cho cùng pipeline này |
 
 Năm tab đầu có khối **Ví dụ mẫu** với 3 test case, bảng chỉ hiện các cột đầu
-vào. Tab 6 và 7 thì ví dụ chỉ **điền vào ô prompt** chứ không chạy model -
-chúng không có ảnh dựng sẵn để trả về, chạy luôn mỗi lần bấm sẽ rất tốn.
+vào. Tab 6 và 7 thì ví dụ chỉ **điền vào ô prompt** chứ không chạy model —
+chúng không có ảnh dựng sẵn để trả về, chạy luôn mỗi lần bấm sẽ mất 6–12s.
 
 ### Tab 6 — Prompt to Image
 
-Không còn pipeline riêng. HiDream-O1 là **model hợp nhất**: text-to-image và
-editing đi qua đúng một lời gọi, chỉ khác ở chỗ có truyền ảnh vào hay không.
-Bản Qwen trước đây phải dựng thêm một pipeline diffusers thứ hai cho tab
-này, kèm một cái bẫy dtype phải né. Toàn bộ đoạn đó đã biến mất.
+FLUX.2-klein **hợp nhất sinh ảnh và sửa ảnh trong một model**:
+`Flux2KleinPipeline.__call__` nhận `image=None`, nên text-to-image và
+image-edit đi qua đúng một pipeline object và đúng một hàm
+`inference.generate()`.
 
-**Về chất lượng:** khác hẳn bản cũ, đây là tác vụ HiDream-O1 được luyện chính,
-không phải đường phụ. Prompt mô tả càng dài và cụ thể càng tốt — model gốc còn
-có một *Reasoning-Driven Prompt Agent* riêng để viết lại prompt, chưa tích hợp
-vào dự án này.
+Đây là thay đổi kiến trúc đáng kể so với backend cũ, nơi
+`QwenImageEditPlusPipeline` **bắt buộc** phải có `image=` và vì thế phải dựng
+thêm một `QwenImagePipeline` thứ hai trỏ vào cùng các module đã nạp. Hàm
+`build_t2i_pipeline()` cùng mọi cái bẫy quanh nó (đừng dùng
+`from_pipe()` — nó cast weight sang fp32 và hỏng luôn pipeline gốc) đã biến
+mất.
 
-Khung hình chọn ở mục *Độ phân giải đầu ra* trong **Tuỳ chỉnh nâng cao** (11
-giá trị cố định). Không còn dropdown "tỉ lệ khung" riêng: độ phân giải đã bao
-hàm tỉ lệ.
+**Về chất lượng:** khác backend cũ (một model chuyên *sửa* ảnh, sinh ảnh từ
+chữ chỉ là tác dụng phụ), tab này giờ chạy đúng thứ model được luyện.
 
-### Chế độ demo (`IMG_DEMO_CACHE`, mặc định bật)
+Tab 6 không có ảnh nền nên tỉ lệ khung phải chọn tay (1:1, 16:9, 9:16, 4:3,
+3:4, 3:2, 2:3); diện tích vẫn lấy từ *Độ phân giải đầu ra*.
+
+### Chế độ demo (`GENIMG_DEMO_CACHE`, mặc định bật)
 
 Khi bật, mọi đầu vào **trùng với một test case mẫu** sẽ trả ảnh đã dựng sẵn
 trong `examples/outputs/` thay vì chạy model:
@@ -381,12 +410,12 @@ trong `examples/outputs/` thay vì chạy model:
 - Bấm nút chạy với đúng ảnh mẫu đó → cũng trả ảnh dựng sẵn, mất ~0.3s.
 - Đầu vào khác (ảnh tester tự upload) → **chạy model thật** như bình thường.
 
-Mục đích là trình diễn không phải chờ cả phút mỗi lần. Ô trạng thái nói thẳng đây
+Mục đích là trình diễn không phải chờ 6–12s mỗi lần. Ô trạng thái nói thẳng đây
 là ảnh dựng sẵn:
 
 ```
 Kết quả dựng sẵn cho ví dụ này (không phải vừa chạy). Bấm nút chạy để model sinh lại ảnh mới.
-2048×2048 · ảnh đọc từ đĩa trong 0.3s
+1024×1024 · ảnh đọc từ đĩa trong 0.3s
 ```
 
 Log phía server cũng ghi `Demo cache hit: ...` mỗi lần trả ảnh dựng sẵn, và số
@@ -396,52 +425,38 @@ ví dụ nạp được in lúc khởi động (`Demo cache: bật (12 ví dụ 
 
 ```bash
 # .env
-IMG_DEMO_CACHE=false
+GENIMG_DEMO_CACHE=false
 ```
 
 Ảnh dựng sẵn sinh bằng:
 
 ```bash
-python scripts/warm_examples.py       # demo phải đang chạy
+python scripts/warm_examples.py       # demo phải đang chạy; 15 case
 ```
 
-> ⚠️ **Ảnh trong `examples/outputs/` hiện là của model CŨ.** Chưa chạy lại
-> `warm_examples.py` thì demo đang trưng ra kết quả không phải do model
-> đang chạy sinh ra. Mỗi case giờ tốn hàng chục giây đến vài phút, cả bộ
-> có thể mất 30+ phút.
-
 Phải chạy lại script này mỗi khi đổi ảnh mẫu, đổi danh sách case trong
-`src/imagegen/ui/examples_spec.py`, hoặc sửa prompt — nếu không, ảnh dựng
-sẵn sẽ lệch với những gì model thực sự sinh ra. Nguồn và giấy phép ảnh xem
-[`examples/README.md`](examples/README.md).
+`src/gen_image/ui/examples_spec.py`, hoặc sửa prompt — nếu không, ảnh dựng
+sẵn sẽ lệch với những gì model thực sự sinh ra.
 
-### ⚠️ Số ảnh đầu vào — cần đánh giá lại sau khi thay lõi
+> ⚠️ **Ảnh mẫu KHÔNG nằm trong repo** (`examples/` chỉ có `outputs/` rỗng và
+> `queue_payloads/`). Team tiếp nhận phải tự chuẩn bị bộ ảnh theo đúng tên
+> file khai trong `examples_spec.py`, và **tự chịu trách nhiệm về nguồn gốc
+> cùng giấy phép** của chúng — ảnh có người thật trong một demo public là
+> chuyện pháp lý, không phải chuyện kỹ thuật. Thiếu ảnh thì UI tự bỏ qua
+> case đó, demo vẫn chạy bình thường.
 
-Bản Qwen cũ dùng `QwenImageEditPlusPipeline` với ngữ nghĩa rõ ràng: nhận N ảnh,
-ảnh **cuối** là ảnh nền (quyết định khung hình), ảnh trước là tham chiếu. Bốn
-tab được xây quanh ngữ nghĩa đó: Virtual Try-On, Ghép 2 người, Face Swap và
-Home Design bản cũ.
+### Thứ tự ảnh — quan trọng với tab 1 và tab 4
 
-**HiDream-O1 không có ngữ nghĩa đó.** Tài liệu của model khuyến nghị **đúng
-một** ảnh tham chiếu cho editing — khi đó ảnh ra giữ khung của ảnh vào
-(`keep_original_aspect`). Truyền nhiều ảnh vẫn chạy, nhưng rơi vào đường
-subject-driven / personalization, chất lượng chưa được kiểm chứng ở đây.
+**Ảnh nền phải là ảnh CUỐI** (nhãn UI đánh nó là "Ảnh 2"). Pipeline lấy tỉ lệ
+khung từ `image[-1]` và mô hình coi ảnh cuối là ảnh chính cần chỉnh sửa. Số trên
+nhãn UI khớp với `image 1` / `image 2` trong prompt, nên khi tự sửa prompt hãy
+giữ đúng cách đánh số đó.
 
-Tình trạng hiện tại của từng tab:
-
-| Tab | Số ảnh | Trạng thái |
-| :-- | :-- | :-- |
-| 2. Home Design | 1 | ✅ Hợp với model mới |
-| 3. Image to Cartoon | 1 | ✅ Hợp với model mới |
-| 6. Prompt to Image | 0 | ✅ Tác vụ mạnh nhất của model |
-| 7. Image + Prompt | 1 | ✅ Hợp với model mới |
-| 1. Virtual Try-On | 2 | ⚠️ Phải A/B lại trên GPU thật |
-| 4. Ghép 2 người ôm nhau | 2 | ⚠️ Phải A/B lại trên GPU thật |
-| 5. Face Swap | 2 | ⚠️ Phải A/B lại trên GPU thật |
-
-Ba tab hai-ảnh vẫn giữ nguyên trong code — chưa có cơ sở để bỏ chúng trước khi
-chạy thử. Xem [docs/MODEL_HIDREAM_O1.md](docs/MODEL_HIDREAM_O1.md)
-§2.3.
+> **Vì sao tab 2 chỉ còn một ảnh.** Bản trước nhận thêm ảnh phòng tham chiếu và
+> kết quả gần như luôn bê nguyên ảnh tham chiếu đó — sửa thứ tự ảnh chỉ chữa
+> được tỉ lệ khung, không chữa được nội dung. Rút prompt ngắn lại thì đúng, và
+> bỏ hẳn ảnh tham chiếu (mô tả phong cách bằng chữ) thì không còn ảnh nào để
+> model copy nhầm. Đó là cách tab 2 hoạt động hiện nay.
 
 ### Tab 5 — Face Swap
 
@@ -458,7 +473,8 @@ chạy thử. Xem [docs/MODEL_HIDREAM_O1.md](docs/MODEL_HIDREAM_O1.md)
   trán hoặc đội mũ.
 - Prompt của tab này là prompt dài nhất trong demo (~1840 ký tự). Ba đoạn giữa
   là phần quyết định: *không dán phẳng ảnh crop*, *relight theo ánh sáng Ảnh
-  2*, và *khớp tông da với cổ/tai/tay*. Nếu phải cắt ngắn cho model bớt lạc, hãy giữ ba đoạn đó lại.
+  2*, và *khớp tông da với cổ/tai/tay*. Nếu phải cắt ngắn cho model 4 bước bớt
+  lạc, hãy giữ ba đoạn đó lại.
 - Hoạt động tốt nhất khi Ảnh 2 có **một khuôn mặt rõ**, và Ảnh 1 crop sát mặt,
   nhìn thẳng, không mờ.
 
@@ -469,135 +485,88 @@ Lưu ý khác:
   tương ứng.
 - Tab 2: ô **Mô tả thiết kế mong muốn** là bắt buộc, viết bằng tiếng Anh.
 - Ô **Ghi chú thêm** ở các tab khác được nối vào cuối prompt.
-- Mục **Tuỳ chỉnh nâng cao** cho phép sửa trực tiếp prompt, `guidance_scale`,
-  `shift`, seed, số bước và **độ phân giải đầu ra**.
-- **Không còn ô negative prompt.** HiDream-O1 không nhận nó — nhánh uncond của
-  CFG dùng prompt `" "` cố định. Ô đó đã bị gỡ khỏi UI thay vì để lại một thứ
-  không có tác dụng; sáu hằng `*_NEGATIVE` trong `prompts.py` cũng đã xoá.
-- `guidance_scale` mặc định `5.0`. **Mỗi giá trị > 1.0 làm mỗi bước chạy hai
-  forward pass** (cond + uncond), tức đắt gấp đôi. Đặt `0.0` nếu chạy bản `dev`
-  đã chưng cất.
-- **Prompt dài là điểm mạnh, không phải điểm yếu** — ngược hẳn model 4-bước cũ.
-  HiDream-O1 ăn mô tả dài, cụ thể. Các prompt hệ thống hiện tại được soạn cho
-  model cũ và **chưa được A/B lại**.
-- **Cùng seed không đảm bảo cùng một ảnh.** Kernel lượng tử hoá không tất định
-  hoàn toàn. Seed thu hẹp biến thiên, không tái lập tuyệt đối.
+- Mục **Tuỳ chỉnh nâng cao** cho phép sửa trực tiếp prompt, negative prompt,
+  `guidance_scale`, seed, số bước và **độ phân giải đầu ra**.
+- **Negative prompt không có tác dụng** với bản klein distilled, ở bất kỳ
+  `guidance_scale` nào: guidance được nhúng thẳng vào model thay vì chạy CFG
+  hai nhánh, nên diffusers tắt hẳn nhánh negative. Ô này chỉ sống lại nếu
+  đổi `base_model` sang bản `klein-base` (không distilled). Service ghi log
+  mỗi lần bỏ qua — xem `inference._negative_embeds`.
+- **Prompt càng dài càng dễ hỏng.** Model 4 bước bám prompt kém; prompt quá dài
+  khiến nó bỏ chỉ dẫn và rơi về hành vi mặc định. Sửa prompt thì nên ngắn, đặt
+  câu mệnh lệnh lên trước.
+- **Cùng seed không cho lại đúng cùng một ảnh.** Kernel INT4 không tất định giữa
+  các lần chạy; đo thực tế cho chênh lệch pixel tối đa ~240/255 dù giữ nguyên mọi
+  đầu vào. Seed chỉ giúp thu hẹp biến thiên, không tái lập tuyệt đối.
 
 ### Tốc độ
 
-> ⚠️ **Chưa có số đo trên model mới.** Bảng benchmark của bản Qwen cũ đã bị gỡ
-> vì nó không còn đúng một chút nào. Chạy `make benchmark` trên GPU của bạn để
-> có số thật — script in ra đúng giá trị cần điền vào
-> `rabbitmq.avg_inference_seconds`.
+> ⚠️ **Chưa có số đo nào trên FLUX.2-klein.** Máy phát triển dùng cho lần
+> chuyển backend này là RTX 3080 10GB — không đủ VRAM cho bf16 (~16 GB).
+> Bảng dưới là **mục tiêu**, không phải kết quả. Chạy
+> `python scripts/spike_flux2.py` rồi `make benchmark` trên L4 và điền vào
+> [ADR 0001](docs/adr/0001-flux2-klein-backend.md) §5.
 
-#### Vì sao phải đo lại: phép tính thô
+| Kịch bản @1024², 4 bước | Backend cũ trên L4 (đã đo) | FLUX.2-klein (mục tiêu) |
+| :--- | ---: | ---: |
+| Text-to-image | 12.9s | **≤ 6s** |
+| Image-edit (1 ảnh) | 16.8s | **≤ 8s** |
+| VRAM đỉnh | ~23 GB | **≤ 18 GB** |
 
-| | Forward pass / ảnh | Pixel | Tương đối |
-| :-- | --: | --: | --: |
-| Qwen Lightning (4 bước, no CFG, 1024²) | 4 | 1.05M | 1× |
-| HiDream-O1 **full** (50 bước, CFG 5.0, 2048²) | **100** | 4.19M | **~100×** |
-| HiDream-O1 **dev** (28 bước, CFG 0.0, 2048²) | 28 | 4.19M | ~28× |
+Cơ sở của mục tiêu: ComfyUI báo ~1.2s @1024² trên RTX 5090; L4 chậm hơn
+khoảng 4–5× về compute và ~3× về băng thông (300 GB/s). Đây là phép ngoại
+suy, không phải cam kết.
 
-Tác giả bản lượng tử hoá đo **30.6s/ảnh** trên RTX PRO 6000 Blackwell. A100 là
-Ampere (sm_80): không có tensor core FP4/FP8, không chạy được flash-attn 3.
-**Dự kiến 60–150s/ảnh trên A100** — nhưng đó là dự kiến, không phải số đo.
+**Denoise chiếm phần lớn thời gian.** Hệ quả: tối ưu bất cứ phần nào ngoài
+denoise đều gần như vô nghĩa; hai đòn bẩy còn lại là **số ảnh tham chiếu** và
+**độ phân giải đầu ra** (`OUTPUT_PRESETS` trong UI, `output_area` trong config).
 
-#### Đòn bẩy tốc độ
-
-Toàn bộ nằm ở **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)** — chi phí một
-tấm ảnh nằm ở đâu, knob nào đổi gì lấy gì, và cách đo.
-
-Tóm tắt: hai tối ưu **không đổi ảnh ra** đã bật sẵn. Số trong cột cuối đo
-trên RTX 3080 — **không phải L4**, và là tỉ lệ trên *phần* đó chứ không phải
-trên tổng (xem PERFORMANCE.md §1 cho phân bổ thật).
-
-| | Sửa gì | Knob | Đo được |
-| :-- | :-- | :-- | :-- |
-| Giải nén trọng số | SDNQ giải nén **toàn bộ** trọng số ở **mỗi** forward pass — 100 lần một ảnh. Giải nén một lần lúc nạp thay vì vậy (VRAM ~11 → ~18 GiB, nên `auto` tự đo card) | `dequantize: auto` | 1.33× trên phần Linear (~90% thời gian) |
-| Đường attention | Mask 4D dày đặc cấm PyTorch dùng backend flash của SDPA, và bắt expand `[B, heads, S, S]` (~1.1GB ở 2048²) lại ở **mỗi layer, mỗi bước**. Thay bằng hai lời gọi SDPA không mask, kết quả y hệt | `attention_mode: auto` | 1.9–2.0× trên phần attention (~10–17% thời gian) |
-
-Ba đòn bẩy nữa **đổi chất lượng lấy tốc độ**, mặc định tắt: hạ `num_steps`
-(scheduler UniPC là solver bậc cao, 50 bước là giá trị an toàn chứ không phải
-ngưỡng cần thiết), thu hẹp `cfg_interval_*` (CFG là đúng 50% chi phí), và
-`snap_resolution: false` (bỏ chặn sàn 2048²).
-
-Đo trước/sau trên chính GPU của bạn — và nếu tổng thời gian không khớp với
-những gì PERFORMANCE.md §1 giải thích được thì hỏi thẳng GPU thay vì đoán:
-
-```bash
-python scripts/benchmark.py --compare   # đường cũ vs đường mới
-python scripts/benchmark.py --profile   # thời gian đi vào kernel nào
-```
-
-> Đường **editing** nối ref patch vào chuỗi nên chuỗi dài **gấp đôi** so với
-> t2i cùng kích thước, mà attention thì O(S²). Một request editing đắt hơn
-> nhiều so với vẻ ngoài của nó.
-
-Hai cách giảm nữa, ở tầng model chứ không phải tầng code:
-
-1. **Dùng bản `dev`** (`model_type: dev`, `num_steps: 28`, `guidance_scale: 0.0`,
-   `shift: 1.0`) — nhanh khoảng 3.5×. Vướng mắc: WaveCut chỉ lượng tử hoá bản
-   `full`. Muốn `dev` + SDNQ thì phải tự quant, hoặc chạy `dev` ở BF16 (~17 GiB,
-   vẫn vừa A100-40GB).
-2. **Chọn variant lượng tử hoá khác** — WaveCut có 5 bản. Bản đang dùng là bản
-   *nhanh nhất* trong nhóm 4-bit; các bản còn lại chậm hơn 6–15% đổi lấy VRAM
-   thấp hơn (tới 8.26 GiB).
-
-#### Điều chỉnh SLA của queue theo số đo
-
-Đây là hệ quả dễ bỏ sót nhất. `config_setup/base.yaml`:
-
-```yaml
-rabbitmq:
-  avg_inference_seconds: 90.0   # ← ĐIỀN SỐ ĐO THẬT
-  target_sla_seconds: 600.0
-  prefetch_count: 1
-  prefetch_max: 4
-```
-
-Để nguyên giá trị của model cũ (`8.0`) thì `effective_prefetch()` cho mỗi
-consumer ôm 8 message × ~2 phút = 16 phút backlog, và message timeout hàng
-loạt. Xem [docs/QUEUE_SERVICE.md](docs/QUEUE_SERVICE.md).
+Lần chạy đầu với mỗi prompt mất thêm thời gian cho text encoder; các lần sau
+ăn cache và hiện `text 0.0s (cache)`. Khác backend cũ, **đổi ảnh mà giữ
+nguyên prompt vẫn ăn cache** — text encoder Qwen3-4B là text-only nên ảnh
+không tham gia vào khoá cache.
 
 #### Con số trên UI là thời gian GPU, không phải round-trip
 
 Ô **Thời gian chạy thật (GPU)** hiển thị:
 
 ```
-⚡ GPU 92.4s (1.84s/bước · 0.92s/forward × 100)
-2048×2048 · 50 bước · cfg 5.0 · shift 3.0 · default · seed 12345
+⚡ GPU 6.3s  =  denoise 5.6s (1.39s/bước) + text 0.0s (cache) + prep 0.3s + decode 0.4s
+1024×1024 · 4 bước · guidance 1.0 · seed 12345
 ```
 
-`s/forward` là đơn giá thật: một bước **có CFG** tốn hai forward pass, nên
-`s/bước` luôn gấp đôi `s/forward` khi `guidance_scale > 1.0`. Thu hẹp
-`cfg_interval_*` sẽ làm số forward pass tụt xuống dưới `2 × num_steps`.
-
-Khoảng thời gian này đo thuần tính toán trên GPU. Nó **không** bao gồm:
+Khoảng thời gian này đo từ **trước** `encode_prompt` đến **sau** khi pipeline
+trả kết quả — thuần tính toán trên GPU. Nó **không** bao gồm:
 
 | Không được tính | Vì sao đáng kể |
 | :--- | :--- |
 | Upload ảnh từ trình duyệt lên server | Vài MB mỗi ảnh |
 | Hàng đợi Gradio | ~0.3s round-trip ngay cả khi rảnh |
-| Mã hoá PNG kết quả rồi trả về | Ảnh 2048×2048 không nhỏ |
-| Tunnel `*.gradio.live` | Traffic đi vòng qua server relay của HuggingFace |
+| Mã hoá PNG kết quả rồi trả về | Ảnh 1024×1024 |
+| Tunnel `*.gradio.live` | **Thường là phần lớn nhất** — traffic đi vòng qua server relay của HuggingFace |
 
-Muốn loại hẳn yếu tố mạng khi đo: truy cập qua LAN / SSH port-forward, hoặc
-dùng `make benchmark` (chạy thẳng trong container, không qua HTTP).
+Nên nếu bấm đồng hồ thấy 15s mà ô trạng thái ghi `GPU 6.3s` thì model vẫn
+chạy đúng 6.3s; phần còn lại là mạng. Muốn loại hẳn yếu tố này khi đo: truy
+cập trực tiếp qua LAN hoặc SSH port-forward, hoặc đo bằng `make benchmark`
+(chạy thẳng trong container, không qua HTTP).
 
-#### VRAM
+> Chuỗi này đi **thẳng vào `result.info`** của outbound message — đổi format
+> là đổi hợp đồng với BE.
 
-Model SDNQ uint4 đỉnh **~10.9 GiB** (bản BF16 gốc là 17.4 GiB). Không còn
-chiến lược offload nào để chỉnh: `accelerate device_map` đặt trọn khối lên card
-đã chọn. Đây là một thắng lợi thật của lần thay lõi — card 24GB giờ chạy được,
-trong khi bản Qwen cũ cần 26.4 GiB.
-
-Đo trên máy của bạn:
+#### Đo trên máy của bạn
 
 ```bash
-make benchmark                                  # trong container đang chạy
-python scripts/benchmark.py --runs 3            # trên host
-python scripts/benchmark.py --width 2560 --height 1440
+make benchmark                                   # trong container đang chạy
+python scripts/benchmark.py --runs 10 --mode t2i  # hoặc trực tiếp
+python scripts/benchmark.py --area 768            # hạ độ phân giải
 ```
+
+`benchmark.py` xoá cache prompt-embed trước mỗi lượt — giữ nguyên prompt qua
+các lượt sẽ ăn cache từ lượt thứ hai và ta chỉ còn đang đo tốc độ tra dict.
+
+> Cách đọc dòng trạng thái: `callback_on_step_end` của diffusers chỉ chạy sau
+> khi một bước kết thúc, nên nếu đo ngây thơ thì phần "prep" sẽ nuốt trọn một
+> bước denoise. Số ở trên đã trừ ra, và `x.xxs/bước` là thời gian một bước thật.
 
 ## Triển khai trên server
 
@@ -669,18 +638,18 @@ Không dùng `make` thì thay bằng `docker compose build` / `up -d` / `logs -f
 
 | Vấn đề | Cách xử lý trong `docker-compose.yml` |
 | :--- | :--- |
-| Trọng số ~9.9GB | Mount `./models:/app/models:ro`, và `.dockerignore` loại `models/` khỏi build context |
-| `.model_paths.env` ghi đường dẫn tuyệt đối của host | Bị loại khỏi image; compose set `IMG_MODEL_PATH` trỏ vào `/app/models` thay thế |
-| Vô tình tải lại ~10GB giữa production | `HF_HUB_OFFLINE=1` biến mọi đường rò xuống Hub thành lỗi dừng hẳn |
+| Trọng số ~16GB | Mount `./models:/app/models:ro`, và `.dockerignore` loại `models/` khỏi build context |
+| `.model_paths.env` ghi đường dẫn tuyệt đối của host | Bị loại khỏi image; compose set `GENIMG_BASE_MODEL_LOCAL` trỏ vào `/app/models` thay thế |
+| Vô tình tải lại ~16GB giữa production | `HF_HUB_OFFLINE=1` biến mọi đường rò xuống Hub thành lỗi dừng hẳn |
 | Phân mảnh VRAM khi shape ảnh thay đổi liên tục | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` |
-| Người dùng đầu tiên phải gánh chi phí khởi tạo | `IMG_WARMUP=true` — warm-up chạy TRƯỚC khi mở cổng. Warm-up là một lượt sinh ảnh THẬT nên `HEALTHCHECK start-period` để 900s |
+| Người dùng đầu tiên phải chờ nạp kernel | `GENIMG_WARMUP=true` — warm-up (t2i + edit) chạy TRƯỚC khi mở cổng |
 | `HF_TOKEN` | Không cần trong container (đã có weights local); compose ghi đè thành rỗng |
 | Link share không hiện trong `docker logs` | `PYTHONUNBUFFERED=1` đã set sẵn trong Dockerfile |
-| Restart policy khác nhau giữa bàn dev và server | Makefile dò GPU rồi set `IMG_RESTART_POLICY` — xem `make gpu-info` |
+| Restart policy khác nhau giữa bàn dev và server | Makefile dò GPU rồi set `GENIMG_RESTART_POLICY` — xem `make gpu-info` |
 
-> `IMG_MODEL_PATH` trỏ vào MỘT thư mục duy nhất, không còn phụ thuộc
-> `num_steps`/`rank`/`precision` như thời Nunchaku (tên file weight mã hoá
-> các tham số đó). Đổi số bước giờ không phải sửa đường dẫn.
+> Đổi `quantization` sang `gguf` thì phải set thêm `transformer_gguf` trỏ tới
+> đúng file `.gguf` đã tải — và chạy lại `make download` sau khi đổi
+> `gguf_file` trong khối `app:`.
 
 ### Restart policy tự dò
 
@@ -693,41 +662,42 @@ Không dùng `make` thì thay bằng `docker compose build` / `up -d` / `logs -f
 | Nhiều GPU không phải A100 | `no` | Bàn dev — crash thì dừng hẳn cho dễ đọc traceback |
 | Không dò được GPU | `no` | Mặc định an toàn |
 
-Ghi đè tay: `make run IMG_RESTART_POLICY=no`.
+Ghi đè tay: `make run GENIMG_RESTART_POLICY=no`.
 
 Cấu hình hiện tại phục vụ **một tải tại một thời điểm** (một container, hàng đợi
 Gradio mặc định xử lý tuần tự).
 
-## Thuê A100 trên Google Cloud
+## Thuê GPU L4 trên Google Cloud
 
-Toàn bộ phần này dành cho việc dựng service từ một project GCP trống.
+Toàn bộ phần này dành cho việc dựng service từ một project GCP trống. Phần
+cứng đích là **L4 24GB** (`g2-*`) — FLUX.2-klein-4B bf16 chỉ cần ~16 GiB nên
+không còn lý do trả tiền cho A100 40GB như backend cũ (26.4 GiB).
 
 ### 0. Chuẩn bị
 
-Cần quota GPU trước — project mới luôn có quota A100 bằng 0:
+Cần quota GPU trước — project mới luôn có quota bằng 0:
 
 ```bash
 gcloud auth login
 gcloud config set project "$PROJECT_ID"
 
-# Xem quota A100 hiện có ở vùng định thuê
+# Xem quota L4 hiện có ở vùng định thuê
 gcloud compute regions describe us-central1 \
-  --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep -i a100
+  --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep -i l4
 ```
 
 Nếu limit = 0 thì xin tăng ở **IAM & Admin → Quotas**, chọn metric
-`NVIDIA_A100_GPUS`. Duyệt thường mất vài giờ đến một ngày làm việc.
+`NVIDIA_L4_GPUS`. Quota L4 thường được duyệt nhanh hơn A100 đáng kể.
 
-A100 40GB có ở `us-central1-a/b/c/f`, `us-west1-b`, `europe-west4-a`,
-`asia-southeast1-b/c` và một số zone khác — danh sách đổi theo thời điểm:
+L4 có ở rất nhiều zone — danh sách đổi theo thời điểm:
 
 ```bash
-gcloud compute accelerator-types list --filter="name=nvidia-tesla-a100"
+gcloud compute accelerator-types list --filter="name=nvidia-l4"
 ```
 
 ### 1. Tạo VM
 
-Máy `a2-highgpu-1g` = **1× A100 40GB**, 12 vCPU, 85GB RAM. Với họ máy `a2-*`
+Máy `g2-standard-8` = **1× L4 24GB**, 8 vCPU, 32GB RAM. Với họ máy `g2-*`
 thì GPU đã gắn sẵn trong machine type, **không cần** cờ `--accelerator`.
 
 Dùng ảnh Deep Learning VM để có sẵn driver NVIDIA + Docker + nvidia-container-toolkit:
@@ -737,45 +707,47 @@ Dùng ảnh Deep Learning VM để có sẵn driver NVIDIA + Docker + nvidia-con
 gcloud compute images list --project deeplearning-platform-release \
   --filter="family~'common-cu'" --format="value(family)" | sort -u
 
-gcloud compute instances create qwen-lightning \
+gcloud compute instances create gen-image \
   --zone=us-central1-a \
-  --machine-type=a2-highgpu-1g \
+  --machine-type=g2-standard-8 \
   --image-family=common-cu124-ubuntu-2204-py310 \
   --image-project=deeplearning-platform-release \
-  --boot-disk-size=250GB \
+  --boot-disk-size=200GB \
   --boot-disk-type=pd-balanced \
   --maintenance-policy=TERMINATE \
   --metadata="install-nvidia-driver=True" \
-  --tags=qwen-lightning
+  --tags=gen-image
 ```
 
 Vài lựa chọn đã cân nhắc:
 
-- **`--maintenance-policy=TERMINATE` là bắt buộc.** VM có GPU không live-migrate được.
-- **Ổ 250GB.** Cần chỗ cho ~10GB weights + ~10GB image + OS — dư nhiều so với
-  trước. Vẫn nên giữ ổ lớn: trên Persistent Disk, băng thông đọc **tăng theo
-  dung lượng ổ**, ổ quá nhỏ làm bước nạp weights lên VRAM chậm hẳn.
-- **A100 80GB** thì đổi sang `a2-ultragpu-1g`. Hoàn toàn không cần — model chỉ
-  chiếm ~11 GiB. Thực ra A100 40GB cũng đã dư; giới hạn giờ là **tốc độ tính
-  toán**, không phải VRAM.
-- **Spot VM** (`--provisioning-model=SPOT`) rẻ hơn đáng kể nhưng bị thu hồi bất kỳ
-  lúc nào. Hợp để test, không hợp cho service đang phục vụ thật.
+- **`--maintenance-policy=TERMINATE` là bắt buộc.** VM có GPU không
+  live-migrate được.
+- **Ổ 200GB.** Cần chỗ cho ~17GB weights + ~10GB image + OS. Quan trọng hơn:
+  trên Persistent Disk, băng thông đọc **tăng theo dung lượng ổ**. Ổ quá nhỏ
+  làm bước nạp weights lên VRAM chậm hẳn. Cần khởi động nhanh hơn nữa thì gắn
+  Local SSD.
+- **RAM 32GB là đủ** với `offload: "resident"` — weight nằm trên GPU, host RAM
+  chỉ dùng lúc nạp. Nếu phải rơi về `model_offload` thì cân nhắc
+  `g2-standard-12` trở lên.
+- **Spot VM** (`--provisioning-model=SPOT`) rẻ hơn đáng kể nhưng bị thu hồi bất
+  kỳ lúc nào. Hợp để test, không hợp cho service đang phục vụ thật.
 
 > Tính tiền theo thời gian VM **chạy**, không theo mức dùng GPU. Không dùng thì
-> `gcloud compute instances stop qwen-lightning --zone=us-central1-a`.
+> `gcloud compute instances stop gen-image --zone=us-central1-a`.
 > Ổ đĩa vẫn tính tiền khi VM đã stop.
 
 ### 2. Kiểm tra máy
 
 ```bash
-gcloud compute ssh qwen-lightning --zone=us-central1-a
+gcloud compute ssh gen-image --zone=us-central1-a
 ```
 
 Lần SSH đầu, ảnh DLVM sẽ hỏi cài driver NVIDIA — trả lời `y` (hoặc đã tự cài nếu
 truyền `install-nvidia-driver=True`). Sau đó xác nhận:
 
 ```bash
-nvidia-smi                    # phải thấy A100-SXM4-40GB và driver >= 525
+nvidia-smi                    # phải thấy NVIDIA L4 (23034MiB) và driver >= 525
 docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
 ```
 
@@ -786,7 +758,7 @@ hơn CUDA 12.8 nhờ CUDA minor version compatibility, nhưng dưới 525 thì k
 
 ```bash
 # Trên VM
-git clone <repo-url> Demo_Qwen_Lightning && cd Demo_Qwen_Lightning
+git clone <repo-url> gen-image && cd gen-image
 cp config_setup/base.example.yaml config_setup/base.yaml
 nano config_setup/base.yaml    # sửa khối app: (hf_token, models_uri…)
 ```
@@ -802,7 +774,7 @@ make preflight                 # xác nhận đủ file trước khi build
 Nếu đã có sẵn weights trong một GCS bucket thì dùng cách này thay thế:
 
 ```bash
-gcloud storage cp -r "gs://$BUCKET/qwen-models/*" ./models/
+gcloud storage cp -r "gs://$BUCKET/gen-image-models/*" ./models/
 make preflight
 ```
 
@@ -810,7 +782,7 @@ make preflight
 
 ```bash
 make build
-make gpu-info                  # xác nhận dò ra A100 -> unless-stopped
+make gpu-info                  # xác nhận dò ra 1 GPU -> unless-stopped
 make run
 make logs                      # chờ "Warm-up xong ..." rồi "Ready."
 ```
@@ -831,7 +803,7 @@ make benchmark
 
 ```bash
 # Chạy trên MÁY BẠN
-gcloud compute ssh qwen-lightning --zone=us-central1-a -- -L 7860:localhost:7860
+gcloud compute ssh gen-image --zone=us-central1-a -- -L 7860:localhost:7860
 ```
 
 Rồi mở `http://localhost:7860`.
@@ -840,9 +812,9 @@ Rồi mở `http://localhost:7860`.
 
 ```bash
 MY_IP=$(curl -s ifconfig.me)
-gcloud compute firewall-rules create allow-qwen-7860 \
+gcloud compute firewall-rules create allow-gen-image-7860 \
   --allow=tcp:7860 \
-  --target-tags=qwen-lightning \
+  --target-tags=gen-image \
   --source-ranges="$MY_IP/32"
 ```
 
@@ -856,8 +828,8 @@ giờ, đừng để demo chạy khi không dùng — xem [Dọn dẹp](#dọn-d
 ### 6. Xong việc
 
 ```bash
-gcloud compute instances stop qwen-lightning --zone=us-central1-a     # giữ ổ đĩa
-gcloud compute instances delete qwen-lightning --zone=us-central1-a   # xoá hẳn
+gcloud compute instances stop gen-image --zone=us-central1-a     # giữ ổ đĩa
+gcloud compute instances delete gen-image --zone=us-central1-a   # xoá hẳn
 ```
 
 ### Khắc phục sự cố
@@ -866,14 +838,14 @@ gcloud compute instances delete qwen-lightning --zone=us-central1-a   # xoá h�
 | :--- | :--- |
 | `could not select device driver "" with capabilities: [[gpu]]` | nvidia-container-toolkit chưa đăng ký với Docker. Chạy lại lệnh kiểm tra ở mục 2 |
 | Log dừng ở `Loading ...` rất lâu | Đang nạp 26.4GB từ Persistent Disk. Ổ nhỏ = đọc chậm; xem mục 1 |
-| `FileNotFoundError: IMG_MODEL_PATH trỏ tới ...` | Mount `./models` sai hoặc chưa tải weights. Chạy `make preflight` |
+| `FileNotFoundError: GENIMG_BASE_MODEL_LOCAL trỏ tới ...` | Mount `./models` sai hoặc chưa tải weights. Chạy `make preflight` |
 | `OfflineModeIsEnabled` / `LocalEntryNotFound` | Thiếu file trong `models/`, code định tải từ Hub nhưng đã bị khoá offline. `make download` lại |
 | `CUDA out of memory` | Có tiến trình khác đang giữ VRAM. `nvidia-smi` xem PID |
 | Container `unhealthy` nhưng vẫn chạy | Warm-up lâu hơn `start-period=600s`. Xem `make logs` |
 
 ## Cho máy khác trong mạng LAN truy cập
 
-Máy chủ demo: **`<demo-server-ip>`** (interface `enp6s0`, subnet `192.168.5.0/24`).
+Máy chủ demo: **`<demo-server-ip>`** (interface `enp6s0`, subnet `<demo-subnet>`).
 Container đã publish `0.0.0.0:7860` nên đã lắng nghe trên mọi interface — địa chỉ
 để các máy khác mở là:
 
@@ -894,7 +866,7 @@ luật ufw. Nghĩa là:
 ### Mở cổng cho subnet công ty
 
 ```bash
-sudo ufw allow from 192.168.5.0/24 to any port 7860 proto tcp comment 'Qwen demo LAN'
+sudo ufw allow from <demo-subnet> to any port 7860 proto tcp comment 'gen-image demo LAN'
 sudo ufw status numbered          # kiểm tra luật đã vào
 ```
 
@@ -919,7 +891,7 @@ ip -4 addr show                   # trên máy client
 ping <demo-server-ip>
 ```
 
-Nếu `ss` cho thấy `127.0.0.1:7860` thay vì `0.0.0.0:7860` thì `IMG_SERVER_NAME`
+Nếu `ss` cho thấy `127.0.0.1:7860` thay vì `0.0.0.0:7860` thì `GENIMG_SERVER_NAME`
 đang sai — `docker-compose.yml` đã ép `0.0.0.0`, chỉ xảy ra khi chạy ngoài Docker.
 
 ### Link public luôn bật — không tắt được
@@ -932,8 +904,8 @@ thiếu link đồng nghĩa demo không dùng được.
 Đổi lại, **mọi lần chạy đều mở một endpoint không xác thực ra Internet**, kể
 cả khi bạn chỉ định test trong LAN. Test nội bộ xong thì dừng demo ngay
 (xem [Dọn dẹp](#dọn-dẹp-sau-khi-test)) chứ đừng để chạy nền. Cần chạy dài
-ngày mà không muốn link thì sửa thẳng `launch_with_public_link()` trong
-`src/imagegen/ui/launcher.py`.
+ngày mà không muốn link thì sửa thẳng `_launch_with_public_link()` trong
+`src/gen_image/ui/launch.py`.
 
 ### Lưu ý khi test tải
 
@@ -964,7 +936,7 @@ bash cleanup.sh
 ```
 
 `cleanup.sh` sẽ:
-- Đọc cổng từ env `IMG_PORT` / `.env` (ưu tiên) rồi mới tới `config_setup/base.yaml` (`app.server_port`).
+- Đọc cổng từ env `GENIMG_PORT` / `.env` (ưu tiên) rồi mới tới `config_setup/base.yaml` (`app.server_port`).
 - **Dừng container Docker của dự án trước tiên** (`docker compose down`). Thứ tự
   này bắt buộc: khi container đang map cổng, `fuser` trả về PID của
   `docker-proxy` — kill nó không dừng container (VRAM vẫn bị giữ) mà chỉ phá
@@ -989,14 +961,14 @@ rm -rf models .model_paths.env
 
 Ba cái bẫy, theo thứ tự hay gặp:
 
-1. **`docker compose up -d` KHÔNG chạy queue worker.** Service `qwen-queue`
+1. **`docker compose up -d` KHÔNG chạy queue worker.** Service `gen-image-queue`
    nằm sau `profiles: ["queue"]`, nên lệnh deploy mặc định chỉ dựng
-   `model-fetcher` + `qwen-lightning` (Gradio). Container chạy xanh, GPU có
+   `model-fetcher` + `gen-image` (Gradio). Container chạy xanh, GPU có
    tải, mà không ai consume inbound queue → `gen-image-queue-out` mãi mãi
    rỗng. Chạy đúng:
 
    ```bash
-   make queue                  # = docker compose --profile queue up -d qwen-queue
+   make queue                  # = docker compose up -d gen-image-queue
    make queue-logs
    curl -s localhost:8395/readyz
    ```
@@ -1014,18 +986,18 @@ Cả 3 đều có chung một triệu chứng — inbound queue đầy dần, `q
 `consumers` = 0 trên RabbitMQ UI. Nhìn cột `consumers` trước khi nghi ngờ
 model.
 
-### Smoke test đường queue — chạy được khi CHƯA có A100
+### Smoke test đường queue — chạy được khi CHƯA có GPU
 
 `Application.run()` nạp model TRƯỚC khi spawn consumer/publisher, nên bình
 thường không có cách nào thử chuỗi broker → worker → `queue_out` nếu máy
-không có GPU + 26GB weight. Service `qwen-queue-smoke` (profile `smoke`) chạy
+không có GPU + 26GB weight. Service `gen-image-queue-smoke` (profile `smoke`) chạy
 cùng image nhưng với `config_setup/smoke.yaml`: `processor.type: echo` (trả
 ảnh placeholder, không nạp model) + `storage.backend: local` (không cần key
 GCS). Mọi mắt xích còn lại giữ nguyên bản.
 
 ```bash
-export IMG_RMQ_HOST=<broker-host> IMG_RMQ_VHOST=gen-image \
-       IMG_RMQ_USER=<username> IMG_RMQ_PASSWORD='...'
+export GENIMG_RMQ_HOST=<broker-host> GENIMG_RMQ_VHOST=gen-image \
+       GENIMG_RMQ_USER=<user> GENIMG_RMQ_PASSWORD='...'
 
 make smoke                                              # dựng container
 python scripts/loadtest_queue.py --rate 5 --duration 10  # bắn tải
@@ -1046,10 +1018,10 @@ Reply trên `queue_out` có đúng hình dạng production:
 Chỉ khác `result.url`: smoke trả `file://`, production trả URL GCS/CDN.
 Smoke pass mà bản thật im lặng → lỗi nằm ở model/GPU, không phải ở queue.
 
-Thông số broker của cả hai service đều nhận env `IMG_RMQ_HOST` / `PORT` /
+Thông số broker của cả hai service đều nhận env `GENIMG_RMQ_HOST` / `PORT` /
 `USER` / `PASSWORD` / `VHOST` / `EXCHANGE` ghi đè lên file yaml, nên password
 không bắt buộc phải nằm trong `base.yaml`. Đổi hẳn file config bằng
-`IMG_QUEUE_CONFIG=/app/config_setup/<file>.yaml`.
+`GENIMG_QUEUE_CONFIG=/app/config_setup/<file>.yaml`.
 
 ## Test tải queue (RabbitMQ)
 
@@ -1064,9 +1036,9 @@ uv venv /tmp/ltvenv && uv pip install --python /tmp/ltvenv/bin/python pika pyyam
 
 ```bash
 # Smoke 30s, 5 msg/s, tự tạo topology nếu vhost còn trống
-export IMG_RMQ_PASSWORD='...'        # secret: để trong env, đừng gõ ra dòng lệnh
+export GENIMG_RMQ_PASSWORD='...'        # secret: để trong env, đừng gõ ra dòng lệnh
 /tmp/ltvenv/bin/python scripts/loadtest_queue.py \
-    --host <broker-host> --vhost gen-image --user <username> \
+    --host <broker-host> --vhost gen-image --user <user> \
     --declare --rate 5 --duration 30
 
 # Đẩy tải: 200 msg/s trong 2 phút, 4 connection, tắt publisher confirm
@@ -1076,7 +1048,7 @@ export IMG_RMQ_PASSWORD='...'        # secret: để trong env, đừng gõ ra d
 ... --rate 2 --duration 300 --drain-out
 ```
 
-Thông số broker lấy theo thứ tự **CLI > env `IMG_RMQ_*` > `config_setup/base.yaml`**,
+Thông số broker lấy theo thứ tự **CLI > env `GENIMG_RMQ_*` > `config_setup/base.yaml`**,
 nên trên server đã có `base.yaml` thì chỉ cần `--rate` / `--duration`; không
 phải gõ mật khẩu ra dòng lệnh.
 
@@ -1109,62 +1081,44 @@ worker sẽ reply `BAD_REQUEST` cho toàn bộ tải test.
 ## Tests
 
 ```bash
-uv run pytest                 # toàn bộ, không cần GPU
-uv run ruff check src tests scripts
-uv run ruff format --check src tests scripts
+uv run pytest
 ```
-
-Test suite cố tình **không cần torch**: `imagegen.hidream` nạp lười (PEP 562),
-và bảng độ phân giải + hợp đồng file model nằm ở hai module thuần stdlib
-(`hidream/resolutions.py`, `hidream/artifacts.py`). Một test
-(`test_table_matches_vendor`) đối chiếu bảng chép tay với bản upstream trong
-`vendor/` và tự bỏ qua khi thiếu torch — nó là chốt chặn sau mỗi lần chạy
-`scripts/vendor_hidream.sh`.
-
-| File | Kiểm gì |
-| :-- | :-- |
-| `test_config.py` | Thứ tự ưu tiên env/yaml/default, `model_type` kéo theo `num_steps`, không còn tiền tố `IMG_` |
-| `test_model_paths.py` | Resolve thư mục model, phát hiện snapshot tải dở, gắn đủ 5 special token |
-| `test_resolution.py` | Snap độ phân giải, không trôi khỏi bảng upstream |
-| `test_cache_location.py` | `HF_HOME` nằm trong project, `download` không gọi `login()` |
-| `test_recipe.py` | `build_recipe()` — ràng buộc chéo scheduler / timesteps / noise params |
-| `test_config_contract.py` | `base.example.yaml` khớp dataclass; `config_env.py` map đủ key |
 
 ## Cấu trúc dự án
 
 ```
-src/imagegen/
-  __init__.py              # ghim HF_HOME + allocator CUDA vào project
-  config.py                # Settings + load_settings() — nguồn config duy nhất
-  device.py  tuning.py     # chọn GPU; cờ torch + warm-up
-  download.py              # tải snapshot model, ghi .model_paths.env
-  logging_setup.py         # LOGGER_NAME + configure_logging()
-  hidream/                 # TẦNG LÕI
-    artifacts.py           #   hợp đồng file snapshot (thuần stdlib)
-    resolutions.py         #   11 độ phân giải cố định (thuần stdlib)
-    loader.py              #   sdnq + AutoProcessor + Qwen3VL
-    inference.py           #   Recipe + generate() cho cả t2i lẫn editing
-    vendor/                #   code HiDream copy từ GitHub — xem VENDOR.md
-  ui/
-    app.py                 #   7 tab Gradio + main()
-    components.py          #   widget + preset dùng chung
-    launcher.py            #   tunnel *.gradio.live
-    prompts.py             #   prompt hệ thống theo task
-    examples_spec.py       #   danh sách test case mẫu
-  queue_service/           # RabbitMQ consumer/publisher, pipeline, audit, storage
-scripts/                   # download_model, serve, preflight, benchmark,
-                           #   warm_examples, loadtest_queue, vendor_hidream.sh,
-                           #   fetch_models.sh, pack_models.sh, config_env.py
-tests/                     # pytest — chạy được không cần GPU
-config_setup/base.yaml           # NGUỒN CONFIG DUY NHẤT (app + queue service)
-config_setup/base.example.yaml   #   template (commit); base.yaml bị gitignore
-config_setup/smoke.yaml          #   smoke test đường queue (processor: echo)
-docs/                      # architecture.md, QUEUE_SERVICE.md,
-                           #   MODEL_HIDREAM_O1.md
-main_queue.py              # entry point queue worker
-cleanup.sh                 # dọn tiến trình / giải phóng VRAM, port
-Dockerfile                 # image 2 stage (builder venv -> runtime)
-Dockerfile.fetch           # image riêng kéo weights từ GCS
-docker-compose.yml         # imagegen / imagegen-queue / imagegen-queue-smoke
-Makefile                   # download / preflight / build / run / queue / smoke
+src/gen_image/                  # mã nguồn chính
+  __init__.py                   #   ghim HF_HOME + allocator CUDA vào project
+  config.py                     #   NGUỒN CONFIG: base.yaml + env GENIMG_*
+  device.py                     #   chọn cuda:N
+  inference.py                  #   generate() — MỘT hàm cho t2i lẫn edit
+  tuning.py                     #   cờ torch, torch.compile, warm-up
+  download.py                   #   tải weight + ghi .model_paths.env
+  models/loader.py              #   dựng Flux2KleinPipeline (bf16 | gguf)
+  models/placement.py           #   resident | model_offload
+  ui/app.py                     #   build_ui() — 7 tab, KHÔNG nạp model
+  ui/launch.py                  #   main() — nạp model, mở cổng, tunnel
+  ui/widgets.py                 #   widget dùng chung giữa các tab
+  ui/demo_cache.py              #   ảnh kết quả dựng sẵn cho khối ví dụ
+  ui/prompts.py                 #   prompt hệ thống ⚠️ chưa chỉnh cho FLUX.2
+  queue_service/                #   RabbitMQ consumer — KHÔNG phụ thuộc model
+scripts/                        # CLI: download_model.py, serve.py,
+                                #   preflight.py   (kiểm model trên đĩa, không cần GPU)
+                                #   spike_flux2.py (cổng chặn Phase 0, cần GPU)
+                                #   benchmark.py   (ma trận latency/VRAM)
+                                #   verify_build.py(chốt phiên bản lúc build image)
+                                #   loadtest_queue.py (bắn tải vào RabbitMQ)
+tests/                          # pytest, KHÔNG cần GPU: config, path resolution,
+                                #   inference (pipeline giả), cấu trúc UI,
+                                #   vị trí cache, schema (hợp đồng BE)
+config_setup/base.yaml          # NGUỒN CONFIG DUY NHẤT (app + queue service)
+config_setup/base.example.yaml  #   template (commit); base.yaml bị gitignore
+docs/                           # kiến trúc, hiệu năng, queue service
+docs/PERFORMANCE.md             #   đã tối ưu gì / đừng làm gì
+docs/adr/                       #   quyết định kiến trúc + kết quả nghiệm thu
+docs/REFACTOR_FLUX2_KLEIN_4B.md #   kế hoạch chuyển backend Qwen -> FLUX.2
+cleanup.sh                      # dọn tiến trình / giải phóng VRAM, port
+Dockerfile                      # image 2 stage (builder venv -> runtime)
+docker-compose.yml              # gen-image (dev UI) + gen-image-queue (production)
+Makefile                        # download / preflight / build / run / benchmark
 ```

@@ -1,0 +1,11 @@
+{
+  "_id": "req-000002",
+  "os": "ios",
+  "firebase_token": "abc123token",
+  "status_code": 200,
+  "message": "success",
+  "result": {
+    "url": "https://cdn.example.com/media-acme/stg/temp/2026/09/17/output.png",
+    "info": "⚡ GPU 2.2s  =  denoise 1.7s (0.43s/bước) + text 0.0s + prep 0.1s + decode 0.3s | 1024×1024 · 4 bước · cfg 1.0 · seed 3861217311"
+  }
+}

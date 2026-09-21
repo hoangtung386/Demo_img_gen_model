@@ -1,0 +1,9 @@
+{
+  "_id": "req-000001",
+  "os": "android",
+  "firebase_token": "abc123token",
+  "appid": "com.example.app",
+  "country": "VN",
+  "device_id": "device-abc123",
+  "prompt": "a cozy scandinavian living room, warm afternoon light"
+}

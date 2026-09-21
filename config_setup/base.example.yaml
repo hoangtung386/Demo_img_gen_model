@@ -15,7 +15,7 @@ service_version: "v0.1.0"
 rabbitmq:
   # ── BE-relevant: tên queue/exchange + broker connection ──
   # Điền thông số broker thật (DevOps cấp). KHÔNG commit giá trị thật.
-  host: ""              # vd "<broker-host>"
+  host: ""              # vd "qas-google.example.com"
   port: 5672
   user: ""              # vd "google_cloud_amb"
   password: ""          # secret — điền lúc deploy
@@ -51,17 +51,13 @@ rabbitmq:
   # ── Advanced (BE thường KHÔNG đụng — giữ default) ──
   # Prefetch per-consumer-channel: 4 tier (premium + basic_1/2/3) → 4
   # channel/container. prefetch_count=1 → 4 unacked/container = fair
-  # distribution multi-container. Mỗi ảnh giờ RẤT đắt nên giữ 1: để container
-  # này ôm nhiều message là chặn các container khác lấy việc.
+  # distribution multi-container. Service GPU 1 worker, sinh ảnh Lightning
+  # p95 ~5-8s → buffer nhỏ là đủ; container khác lấy phần còn lại trên broker.
   # prefetch_count=0 → auto-tune = clamp(target_sla/avg_inference, 1, prefetch_max).
   prefetch_count: 1
-  # ĐỔI THEO SỐ ĐO THẬT (scripts/benchmark.py in ra giá trị cần điền).
-  # 50 bước x 2 forward pass (CFG) ở 2048² chậm hơn bản Lightning 4-bước một
-  # bậc độ lớn. Để nguyên 8.0 là cách nhanh nhất làm backlog phình và
-  # message timeout hàng loạt.
-  target_sla_seconds: 600.0    # informational khi prefetch_count > 0
-  avg_inference_seconds: 90.0  # informational khi prefetch_count > 0
-  prefetch_max: 4              # cap cho auto-tune (chỉ áp dụng prefetch_count=0)
+  target_sla_seconds: 120.0    # informational khi prefetch_count > 0
+  avg_inference_seconds: 8.0   # informational khi prefetch_count > 0
+  prefetch_max: 8              # cap cho auto-tune (chỉ áp dụng prefetch_count=0)
   heartbeat: 600
   # Reconnect exponential backoff + jitter.
   reconnect_initial_seconds: 1.0
@@ -71,9 +67,6 @@ rabbitmq:
   broker_healthcheck_interval_seconds: 15.0
   broker_healthcheck_timeout_seconds: 3.0
   # Retry / DLQ topology (idempotent declared lúc startup).
-  # Retry queue dùng TTL CỐ ĐỊNH = retry_initial_delay_ms. Không có
-  # exponential backoff — đừng thêm knob multiplier/max_delay trở lại
-  # trừ khi có code thật đọc chúng.
   retry_exchange_suffix: ".retry"
   dlq_suffix: ".dlq"
   # retry_max_attempts: 0 → MỌI lỗi (PERMANENT + TRANSIENT) đều DLQ ngay
@@ -95,17 +88,11 @@ storage:
   # key thật). Key download model nội bộ là file KHÁC: xem app.gcs_key_file.
   backends:
     - credentials_path: "config_setup/credentials/user-upload-key.json"
-      bucket: ""                      # vd "<your-bucket>"
-      folder: "media-acme/<your-folder>"
+      bucket: ""                      # vd "ai-bucket-v5"
+      folder: ""                      # vd "media-dev/temp"
       feature: "gen-image"
       signed_url_ttl_minutes: 15
       cdn_base_url: ""
-    - credentials_path: "config_setup/credentials/user-upload-key.json"
-      bucket: ""                      # vd "<your-bucket>"
-      folder: "genimg_manual_v2"
-      feature: "gen-image"
-      signed_url_ttl_minutes: 15
-      cdn_base_url: ""                # vd "https://<cdn-domain>"
 
 # ╔══════════════════════════════════════════════════════════════════════╗
 # ║  PHẦN 2 — CONFIG NỘI BỘ AI (BE KHÔNG ĐỤNG, để mặc định)              ║
@@ -114,56 +101,70 @@ storage:
 # ║  benchmark / debug. Default values cover 95% trường hợp.             ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 
-# HiDream-O1-Image (SDNQ 4-bit) inference. Các knob ở đây map thẳng vào
-# imagegen.config.Settings — service queue nạp model qua loader chung.
+# FLUX.2-klein-4B inference. Các knob ở đây map thẳng vào
+# gen_image.config.Settings — service queue nạp model qua loader chung.
 processor:
-  type: "hidream_o1"
+  type: "flux2_klein"
   device: ""                    # rỗng → auto (cuda:1 nếu >=2 GPU, else cuda:0)
-  model_path: ""                # rỗng → theo IMG_MODEL_PATH / .model_paths.env
-  model_type: "full"            # "full" (50 bước) | "dev" (28 bước)
-  num_steps: 50
-  # CFG bật THẬT: mỗi bước chạy HAI forward pass (cond + uncond). Đặt 0.0
-  # nếu model_type: dev — bản đó đã chưng cất, không cần CFG.
-  guidance_scale: 5.0
-  shift: 3.0                    # 3.0 cho full, 1.0 cho dev
-  scheduler_name: "default"     # "default" | "flow_match" | "flash"
-  # Kích thước YÊU CẦU. Model snap về 1 trong 11 độ phân giải cứng, nhỏ nhất
-  # 2048x2048 — đặt nhỏ hơn KHÔNG cho ảnh nhỏ hơn, chỉ đổi tỉ lệ khung.
-  width: 2048
-  height: 2048
-  warmup: true
-  # Chỉ chạy `warmup_steps` bước, không phải cả num_steps: chi phí cần trả
-  # trước (CUDA context, allocator, dequant lần đầu, autotune) là chi phí
-  # MỘT LẦN chứ không nhân theo số bước.
-  warmup_steps: 2
-
-  # ── TỐC ĐỘ (xem docs/PERFORMANCE.md trước khi đổi) ──
-  # Đường attention.
-  #   auto / sdpa → tách hai lượt SDPA, KHÔNG dựng mask 4D. Mặc định, nhanh
-  #                 nhất mà không cần cài thêm gì.
-  #   mask        → đường gốc của upstream. Chỉ dùng để đối chiếu numerics.
-  #   flash       → wheel flash-attn (phải tự cài, khớp torch + CUDA).
-  attention_mode: "auto"
-  # Giải nén trọng số SDNQ về bf16 NGAY lúc nạp thay vì giải nén lại ở MỖI
-  # forward pass (~100 lần một ảnh). Đòn bẩy tốc độ lớn nhất trên card 24GB.
-  #   auto → bật nếu VRAM còn đủ chỗ (tự đo lúc nạp)
-  #   bf16 → luôn bật (VRAM ~11GiB → ~18GiB)
-  #   off  → luôn giữ nén (cho card < 20GB)
-  dequantize: "auto"
-  # torch.compile cho decoder. Lượt đầu ở MỖI độ phân giải mới tốn vài phút
-  # biên dịch — chỉ có lãi cho worker chạy dài ở một kích thước cố định.
-  compile_model: false
-  # Khoảng bước (chuẩn hoá 0..1) CÒN chạy nhánh uncond của CFG. Ngoài khoảng
-  # này mỗi bước tốn MỘT forward pass thay vì hai.
-  #   [0.0, 1.0]  → nguyên bản, không bỏ bước nào
-  #   [0.0, 0.75] → bỏ CFG ở 25% bước cuối, nhanh hơn ~12%
-  cfg_interval_start: 0.0
-  cfg_interval_end: 1.0
-  # false → sinh ĐÚNG kích thước yêu cầu (làm tròn bội số 32) thay vì snap
-  # về PREDEFINED_RESOLUTIONS. Rẻ hơn rất nhiều (chi phí ~ số pixel, riêng
-  # attention thì ~ bình phương) nhưng NGOÀI phân bố huấn luyện: chất lượng
-  # tụt rõ. Dùng cho bản nháp/preview, đừng để bật ở PRD.
-  snap_resolution: true
+  num_steps: 4                  # bản distilled được chưng cất về đúng 4 bước
+  # "bf16" (mặc định) | "gguf".
+  #
+  # bf16 là mặc định DÙ nặng hơn trên đĩa, và đây là lựa chọn có chủ đích:
+  # tổng weight bf16 ~16GB (transformer 7.75 + text_encoder Qwen3-4B ~8 +
+  # vae ~0.3) vừa thoải mái trong 24GB của L4, trong khi GGUF giải nén về
+  # bf16 ngay trong forward — tức đổi dung lượng lấy băng thông, mà băng
+  # thông (300 GB/s trên L4) mới là nút cổ chai. GGUF cũng KHÔNG
+  # torch.compile được (diffusers#10795).
+  #
+  # Chỉ chọn "gguf" khi cần nhồi NHIỀU process worker lên cùng một card:
+  # 2 × bf16 không vừa, 2 × Q4_K_M (~9GB) thì vừa. Quyết bằng số đo của
+  # scripts/benchmark.py, không phải bằng suy đoán.
+  # Thêm lựa chọn thứ ba: "fp8" (optimum-quanto). L4 là Ada (sm_89) nên CÓ
+  # tensor core FP8 thật — khác GGUF, không phải giải nén trong forward.
+  # CHƯA ĐƯỢC ĐO: cần `uv sync --extra fp8` rồi so bằng
+  # `python scripts/spike_flux2.py --modes bf16 fp8` trước khi bật.
+  quantization: "bf16"
+  # --- Bộ nhớ VAE -------------------------------------------------------
+  # Cả hai mặc định TẮT vì cấu hình bf16 resident trên L4 đang DƯ VRAM chứ
+  # không thiếu. Bật khi: chạy trên 1024², hoặc nhồi nhiều process/GPU, hoặc
+  # `make benchmark` cho thấy decode là phần đáng kể của VRAM đỉnh.
+  vae_tiling: false             # decode latent theo ô — giảm VRAM đỉnh
+  vae_slicing: false            # chỉ có tác dụng khi batch > 1 (hiện là 1)
+  # Số prompt giữ trong cache embed. Mỗi entry vài MB, nâng lên hàng trăm
+  # vẫn rẻ so với 24GB. Tăng khi `make benchmark` cho thấy `text` chiếm tỉ
+  # trọng lớn VÀ prompt của user lặp lại nhiều.
+  embed_cache_size: 8
+  # torch.compile transformer. Mặc định TẮT. Chiều ảnh ra suy từ tỉ lệ ảnh
+  # người dùng nên gần như mỗi request một shape mới; compile chỉ có lãi khi
+  # đã xác nhận số lần recompile hội tụ về 0 (chạy với TORCH_LOGS=recompiles).
+  # Chỉ có tác dụng ở nhánh quantization="bf16".
+  compile_transformer: false
+  # "resident" (mặc định) → mọi component thường trú trên GPU, không một lần
+  #   chuyển CPU<->GPU nào lúc suy luận. Đúng cho L4 24GB.
+  # "model_offload" → weight ở CPU, kéo lên GPU theo từng module lúc forward.
+  #   Chậm hơn đáng kể; chỉ dùng khi card nhỏ hơn L4 hoặc cần nhiều process
+  #   worker trên cùng card.
+  offload: "resident"
+  # Bản distilled nhúng guidance vào model thay vì chạy CFG hai nhánh, nên
+  # giá trị này KHÔNG bật negative_prompt và cũng không nhân đôi chi phí
+  # denoise. 1.0 là giá trị của model card.
+  guidance_scale: 1.0
+  output_area: 1048576          # 1024*1024 — diện tích ảnh ra mặc định
+  # Trần pixel cho MỖI CHIỀU (width, height) của ảnh input tham chiếu. Vượt
+  # trần KHÔNG bị từ chối — pipeline tự resize (giữ tỉ lệ, không phóng) về
+  # khung này. Không ảnh hưởng VRAM/tốc độ GPU (Flux2KleinPipeline vốn đã tự
+  # thu ảnh tham chiếu xuống <=1024*1024), chỉ chặn RAM/băng thông lúc decode
+  # ảnh cực lớn bằng PIL.
+  max_input_dimension: 1280
+  warmup: true                  # trả trước chi phí lượt sinh đầu tiên lúc startup
+  # Rỗng → tải từ HuggingFace Hub (cần mạng, LỖI nếu HF_HUB_OFFLINE=1 và
+  # chưa có sẵn trong cache). Đặt đường dẫn TRONG container (mount ./models
+  # ở docker-compose.yml) để dùng trọng số model-fetcher đã kéo sẵn từ GCS —
+  # bắt buộc trên production, vì service này KHÔNG đọc biến môi trường
+  # GENIMG_*, chỉ đọc field dưới đây từ base.yaml.
+  base_model_local: "/app/models/FLUX.2-klein-4B"
+  # Chỉ được đọc khi quantization="gguf". Để rỗng ở nhánh bf16.
+  transformer_gguf: ""
 
 worker:
   num_ai_workers: 1
@@ -192,48 +193,48 @@ audit:
 # ║  PHẦN 3 — CONFIG APP GRADIO + DOWNLOAD MODEL                         ║
 # ║  Gộp từ config/example.env cũ. Nguồn config DUY NHẤT cho serve.py,   ║
 # ║  download.py và các script model (fetch/pack). Mọi key vẫn có thể    ║
-# ║  override bằng biến môi trường IMG_* / HF_TOKEN / MODEL_ROOT.        ║
+# ║  override bằng biến môi trường GENIMG_* / HF_TOKEN / MODEL_ROOT.     ║
 # ╚══════════════════════════════════════════════════════════════════════╝
 app:
-  # --- Tham số sinh ảnh (serve.py + benchmark.py) --- (env: IMG_*)
-  model_type: "full"            # IMG_MODEL_TYPE — "full" | "dev"
-  num_steps: 50                 # IMG_NUM_STEPS — 50 (full) | 28 (dev)
-  guidance_scale: 5.0           # IMG_GUIDANCE_SCALE — 0.0 cho dev
-  shift: 3.0                    # IMG_SHIFT — 3.0 (full) | 1.0 (dev)
-  scheduler_name: "default"     # IMG_SCHEDULER — default|flow_match|flash
-  width: 2048                   # IMG_WIDTH  — snap về PREDEFINED_RESOLUTIONS
-  height: 2048                  # IMG_HEIGHT
+  # --- Runtime / inference (serve.py + download.py) --- (env: GENIMG_*)
+  # Dùng cho CẢ HAI: `serve.py` chạy trực tiếp (không Docker) LẪN service
+  # Docker `gen-image`, service này mount config_setup/:/app/config_setup:ro
+  # nên đọc đúng file base.yaml thật của host. Copy file này thành base.yaml
+  # rồi điền giá trị, đừng sửa thẳng bản .example (bản thật đã .gitignore,
+  # KHÔNG commit).
+  num_steps: 4                  # GENIMG_NUM_STEPS
+  guidance_scale: 1.0           # GENIMG_GUIDANCE_SCALE
+  quantization: "bf16"          # GENIMG_QUANTIZATION — bf16 | gguf | fp8
+  vae_tiling: false             # GENIMG_VAE_TILING
+  vae_slicing: false            # GENIMG_VAE_SLICING
+  embed_cache_size: 8           # GENIMG_EMBED_CACHE_SIZE
+  compile_transformer: false    # GENIMG_COMPILE
+  device: ""                    # GENIMG_DEVICE — rỗng auto (cuda:1 nếu >=2 GPU)
+  offload: "resident"           # GENIMG_OFFLOAD — resident | model_offload
+  warmup: true                  # GENIMG_WARMUP
+  demo_cache: true              # GENIMG_DEMO_CACHE
 
-  # --- Runtime ---
-  device: ""                    # IMG_DEVICE — rỗng auto (cuda:1 nếu >=2 GPU)
-  warmup: true                  # IMG_WARMUP
-  warmup_steps: 2               # IMG_WARMUP_STEPS — 2 bước là đủ trả trước
-  demo_cache: true              # IMG_DEMO_CACHE
-
-  # --- Tốc độ (docs/PERFORMANCE.md) ---
-  attention_mode: "auto"        # IMG_ATTENTION_MODE — auto|sdpa|mask|flash
-  dequantize: "auto"            # IMG_DEQUANTIZE — auto|bf16|off
-  compile_model: false          # IMG_COMPILE
-  cfg_interval_start: 0.0       # IMG_CFG_INTERVAL_START
-  cfg_interval_end: 1.0         # IMG_CFG_INTERVAL_END — <1.0 bỏ CFG cuối
-  snap_resolution: true         # IMG_SNAP_RESOLUTION — false = nháp, nhanh
-
-  # --- Nguồn model (download.py) ---
-  model_root: "models"          # MODEL_ROOT
-  # IMG_BASE_MODEL. Repo MIT, KHÔNG gated — khác Qwen trước đây, không cần
-  # accept license và không bắt buộc HF_TOKEN.
-  base_model: "WaveCut/HiDream-O1-Image-SDNQ-4bit-dynamic-uint4-th1e-2"
-  model_path: ""                # IMG_MODEL_PATH — thư mục local đã tải
+  # --- Model source (download.py) ---
+  model_root: "models"                              # MODEL_ROOT
+  # PHẢI là bản distilled. "FLUX.2-klein-base-4B" là repo KHÁC: không
+  # distilled, cần vài chục bước và guidance thật, chậm hơn ~4 lần ở cùng
+  # cấu hình. Preflight cảnh báo nếu model_index.json thiếu is_distilled.
+  base_model: "black-forest-labs/FLUX.2-klein-4B"   # GENIMG_BASE_MODEL
+  # Chỉ dùng khi quantization="gguf".
+  gguf_repo: "unsloth/FLUX.2-klein-4B-GGUF"         # GENIMG_GGUF_REPO
+  gguf_file: "flux-2-klein-4b-Q8_0.gguf"            # GENIMG_GGUF_FILE
+  base_model_local: ""          # GENIMG_BASE_MODEL_LOCAL
+  transformer_gguf: ""          # GENIMG_TRANSFORMER_GGUF
 
   # --- Server / UI (serve.py) ---
-  server_name: "0.0.0.0"        # IMG_SERVER_NAME
-  server_port: 7860             # IMG_PORT
+  server_name: "0.0.0.0"        # GENIMG_SERVER_NAME
+  server_port: 7860             # GENIMG_PORT
 
   # --- HuggingFace --- (secret: set qua env HF_TOKEN, đừng commit)
-  hf_token: ""                  # HF_TOKEN — tuỳ chọn, repo không gated
+  hf_token: ""                  # HF_TOKEN
 
   # --- Nguồn trọng số cho Docker (GCS fetch_models.sh) ---
-  models_uri: ""                # IMG_MODELS_URI — gs://bucket/path
+  models_uri: ""                # GENIMG_MODELS_URI — gs://bucket/path
   # Key download model nội bộ (đường dẫn TRONG container: /credentials).
-  gcs_key_file: "/credentials/model-download-key.json"   # IMG_GCS_KEY_FILE
-  models_force: false           # IMG_MODELS_FORCE
+  gcs_key_file: "/credentials/model-download-key.json"   # GENIMG_GCS_KEY_FILE
+  models_force: false           # GENIMG_MODELS_FORCE
